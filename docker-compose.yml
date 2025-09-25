@@ -1,0 +1,25 @@
+
+version: "3.9"
+
+services:
+  default-automation:
+    build: .
+    container_name: default-automation
+    ports:
+      - "3000:3000"
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000"]
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+
+
+
+
