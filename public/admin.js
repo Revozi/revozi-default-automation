@@ -232,7 +232,7 @@ function updateBotStatusOverview(botStatus) {
 // Posts View
 async function loadPostsView() {
   try {
-    const posts = await fetchAPI("/admin/posts/queue")
+    const posts = await fetchAPI("/admin/queue")
     renderPostsTable(posts)
     attachPostsEventListeners()
   } catch (error) {
@@ -365,7 +365,7 @@ async function deletePost(postId) {
 
 async function viewPostDetails(postId) {
   try {
-    const posts = await fetchAPI("/admin/posts/queue")
+    const posts = await fetchAPI("/admin/queue")
     const post = posts.find((p) => p.id == postId)
     if (post) {
       openModal("Post Details", renderPostDetailsModal(post))
@@ -410,7 +410,7 @@ async function filterPosts() {
   if (statusFilter !== "all") params.append("status", statusFilter)
 
   try {
-    const posts = await fetchAPI(`/admin/posts/queue?${params.toString()}`)
+    const posts = await fetchAPI(`/admin/queue?${params.toString()}`)
     renderPostsTable(posts)
     attachPostsEventListeners()
   } catch (error) {
@@ -1949,7 +1949,7 @@ async function filterPosts() {
 
   // Fetch all posts and filter client-side (or server-side if API supports)
   try {
-    const posts = await fetchAPI("/admin/posts/queue")
+    const posts = await fetchAPI("/admin/queue")
     let filtered = posts
     if (platformFilter !== "all") {
       filtered = filtered.filter(p => (p.platform || "").toLowerCase() === platformFilter)

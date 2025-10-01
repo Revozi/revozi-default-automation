@@ -1038,22 +1038,26 @@ document.addEventListener('DOMContentLoaded', () => {
 
         <div style="margin-bottom: 16px;">
           <label style="display: block; margin-bottom: 6px; font-weight: bold;">Platform</label>
-          <select name="platform" multiple required style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #ccc; height: 160px;">
-            
-            <option value="instagram">Instagram</option>
-            <option value="twitter">Twitter</option>
-            <option value="tiktok">TikTok</option>
-            <option value="facebook">Facebook</option>
-            <option value="reddit">Reddit</option>
-            <option value="telegram">Telegram</option>
-            <option value="pinterest">Pinterest</option>
-            <option value="snapchat">Snapchat</option>
-            <option value="linkedin">LinkedIn</option>
-            <option value="quora">Quora</option>
-            <option value="discord">Discord</option>
-            <option value="gmb">GMB</option>
+          <div style="position: relative;">
+            <select name="platforms[]" multiple required style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #ccc; height: 160px;" id="platform-select">
+              <option value="instagram">Instagram</option>
+              <option value="twitter">Twitter</option>
+              <option value="tiktok">TikTok</option>
+              <option value="facebook">Facebook</option>
+              <option value="reddit">Reddit</option>
+              <option value="telegram">Telegram</option>
+              <option value="pinterest">Pinterest</option>
+              <option value="snapchat">Snapchat</option>
+              <option value="linkedin">LinkedIn</option>
+              <option value="quora">Quora</option>
+              <option value="discord">Discord</option>
+              <option value="gmb">GMB</option>
             </select>
-
+            <div style="margin-top: 8px; font-size: 12px; color: #666;">
+              Hold Ctrl (Windows) or Cmd (Mac) to select multiple platforms
+            </div>
+            <div id="selected-platforms" style="margin-top: 10px; display: flex; flex-wrap: wrap; gap: 8px;"></div>
+          </div>
         </div>
 
         <div style="margin-bottom: 16px;">
@@ -1097,33 +1101,75 @@ document.addEventListener('DOMContentLoaded', () => {
       </form>
     </div>
     `);
+document.getElementById('platform-select').addEventListener('change', function() {
+  const selectedOptions = Array.from(this.selectedOptions);
+  const selectedPlatformsDiv = document.getElementById('selected-platforms');
+  selectedPlatformsDiv.innerHTML = '';
+  
+  selectedOptions.forEach(option => {
+      const badge = document.createElement('span');
+      badge.style.cssText = `
+          padding: 4px 8px;
+          background-color: #e2e8f0;
+          border-radius: 4px;
+          font-size: 12px;
+          color: #4a5568;
+          margin-right: 4px;
+          margin-bottom: 4px;
+          display: inline-block;
+      `;
+      badge.textContent = option.text;
+      selectedPlatformsDiv.appendChild(badge);
+  });
+});
+
 document.getElementById('add-post-form').onsubmit = async function(e) {
   e.preventDefault();
   const fd = new FormData(this);
   const payload = Object.fromEntries(fd.entries());
 
-  // Get multiple platforms
-  const platforms = Array.from(this.querySelector('[name="platform"]').selectedOptions).map(opt => opt.value);
+  // Get multiple platforms with validation
+  const platformSelect = this.querySelector('#platform-select');
+  const platforms = Array.from(platformSelect.selectedOptions).map(opt => opt.value);
+  
+  if (platforms.length === 0) {
+      showToast('Please select at least one platform', 'error');
+      platformSelect.focus();
+      return;
+  }
 
   // Convert scheduled_at to ISO string
   if (payload.scheduled_at) {
-    payload.scheduled_at = new Date(payload.scheduled_at).toISOString();
+      payload.scheduled_at = new Date(payload.scheduled_at).toISOString();
   }
 
   try {
-    // Loop through each platform and send request
-    for (const platform of platforms) {
-      const body = { ...payload, platform };
-      await fetch('/admin/schedule-post', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify(body)
-      });
-    }
-    closeModal();
-    location.reload();
+      // Show loading state
+      const submitBtn = this.querySelector('button[type="submit"]');
+      const originalText = submitBtn.textContent;
+      submitBtn.textContent = 'Scheduling...';
+      submitBtn.disabled = true;
+
+      // Loop through each platform and send request
+      for (const platform of platforms) {
+          const body = { ...payload, platform };
+          const response = await fetch('/admin/schedule-post', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(body)
+          });
+          
+          if (!response.ok) {
+              throw new Error(`Failed to schedule post for ${platform}`);
+          }
+      }
+
+      showToast(`Successfully scheduled post for ${platforms.length} platform(s)`, 'success');
+      closeModal();
+      loadSection('posts'); // Refresh the posts section instead of full page reload
   } catch (err) {
-    console.error("Failed to schedule posts", err);
+      console.error("Failed to schedule posts", err);
+      showToast(err.message || 'Failed to schedule posts', 'error');
   }
 };
 
