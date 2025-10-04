@@ -105,6 +105,87 @@ begin
 end;
 $$ language plpgsql;
 
+
+-- ROLES AND PERMISSIONS
+create table if not exists roles (
+  id uuid primary key default gen_random_uuid(),
+  name text unique not null,
+  description text
+);
+
+create table if not exists permissions (
+  id uuid primary key default gen_random_uuid(),
+  code text unique not null,
+  description text
+);
+
+create table if not exists role_permissions (
+  role_id uuid references roles(id) on delete cascade,
+  permission_id uuid references permissions(id) on delete cascade,
+  primary key (role_id, permission_id)
+);
+
+create table if not exists user_roles (
+  user_id uuid references users(id) on delete cascade,
+  role_id uuid references roles(id) on delete cascade,
+  primary key (user_id, role_id)
+);
+
+-- seed base roles/permissions (idempotent)
+insert into roles (id, name, description)
+select gen_random_uuid(), r.name, r.description
+from (values
+  ('admin','Full administrative access'),
+  ('partner','Limited access to own data'),
+  ('visitor','Captured user, minimal access')
+) as r(name, description)
+where not exists (select 1 from roles where name = r.name);
+
+insert into permissions (id, code, description)
+select gen_random_uuid(), p.code, p.description
+from (values
+  ('dashboard.view','View dashboard'),
+  ('users.manage','Manage users'),
+  ('bots.manage','Run and manage bots'),
+  ('rewards.manage','Manage rewards'),
+  ('posts.write','Create and schedule posts'),
+  ('posts.read','Read posts queue'),
+  ('settings.manage','Change system settings'),
+  ('logs.read','Read system logs')
+) as p(code, description)
+where not exists (select 1 from permissions where code = p.code);
+
+-- map admin to all permissions
+insert into role_permissions (role_id, permission_id)
+select r.id, p.id from roles r, permissions p
+where r.name = 'admin'
+and not exists (
+  select 1 from role_permissions rp where rp.role_id = r.id and rp.permission_id = p.id
+);
+
+-- map partner minimal permissions
+insert into role_permissions (role_id, permission_id)
+select r.id, p.id
+from roles r, permissions p
+where r.name = 'partner' and p.code in ('dashboard.view','posts.write','posts.read','logs.read')
+and not exists (
+  select 1 from role_permissions rp where rp.role_id = r.id and rp.permission_id = p.id
+);
+-- Create leaderboard table
+CREATE TABLE IF NOT EXISTS leaderboard (
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  points INTEGER NOT NULL DEFAULT 0,
+  position INTEGER NOT NULL,
+  week_start DATE NOT NULL,
+  week_end DATE NOT NULL,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Create index for faster queries on user_id and position
+CREATE INDEX IF NOT EXISTS idx_leaderboard_user_id ON leaderboard(user_id);
+CREATE INDEX IF NOT EXISTS idx_leaderboard_position ON leaderboard(position);
 -- 4. Attach Trigger
 drop trigger if exists engagement_reward_trigger on engagements;
 

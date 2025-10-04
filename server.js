@@ -10,6 +10,9 @@ const adminRoutes = require("./routes/adminRoutes");
 const unsubscribeRoutes = require("./routes/unsubscribeRoutes");
 const twilioWebhook = require("./routes/twilioWebhook");
 const verificationRoutes = require('./routes/verificationRoutes');
+const leaderboardRoutes = require('./routes/leaderboardRoutes');
+const rewardsWebhooks = require('./routes/webhooks');
+const rewardsRoutes = require('./routes/rewardsRoutes');
 const startCronJobs = require("./cron/scheduleBots");
 const cleanupInactive = require("./cron/cleanupInactive");
 const dispatcherCron = require("./cron/dispatcher");
@@ -35,6 +38,9 @@ app.use("/admin", adminRoutes);
 app.use("/unsubscribe", unsubscribeRoutes);
 app.use("/webhooks", twilioWebhook);
 app.use('/verify', verificationRoutes);
+app.use('/webhooks/rewards', rewardsWebhooks);
+app.use('/leaderboard', leaderboardRoutes);
+app.use('/rewards', rewardsRoutes);
 
 app.get("/admin", (req, res) => {
   res.sendFile(path.join(__dirname, "public/admin.html"));

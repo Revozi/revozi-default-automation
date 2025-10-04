@@ -21,10 +21,11 @@ exports.signup = async (req, res) => {
     const hash = await bcrypt.hash(password, 10);
 
     // Insert user (remove .single() here)
+    const role = req.body.role || 'visitor';
     const { data, error } = await supabase
       .from('users')
-      .insert([{ name, email, password: hash, phone, last_active: new Date() }])
-      .select('id, name, email'); // no .single()
+      .insert([{ name, email, password: hash, phone, last_active: new Date(), role }])
+      .select('id, name, email, role'); // return role
 
     if (error) {
       console.error('Signup insert error:', error);
@@ -51,7 +52,9 @@ exports.login = async (req, res) => {
     if (!match) return res.status(400).json({ error: 'Invalid credentials' });
     // Update last_active
     await supabase.from('users').update({ last_active: new Date() }).eq('email', email);
-    res.json({ message: 'Login successful', user: { id: user.id, name: user.name, email: user.email } });
+  // Attach minimal auth context (simulate session) for downstream middleware
+  req.user = { id: user.id, name: user.name, email: user.email, role: user.role };
+  res.json({ message: 'Login successful', user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
     res.status(500).json({ error: 'Login failed' });
   }
@@ -98,7 +101,7 @@ exports.magicLogin = async (req, res) => {
       })
       .eq('id', user.id);
     await triggerTrap(user.email, 'magic-login');
-    res.json({ message: 'Magic login successful', user: { id: user.id, name: user.name, email: user.email } });
+    res.json({ message: 'Magic login successful', user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
     res.status(500).json({ error: 'Magic login failed' });
   }
