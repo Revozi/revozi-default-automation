@@ -17,60 +17,67 @@ async function logToSupabase(activity) {
 async function runInstagramBot() {
   logger.info('[InstagramBot] Starting (Graph API)');
 
-  const token = process.env.FB_ACCESS_TOKEN;
-  const pageId = process.env.FB_PAGE_ID;
+  const { loadProviderCredentials } = require('../utils/credentials');
+  const fbCreds = loadProviderCredentials('FACEBOOK', ['pageId', 'accessToken']);
   const igId = process.env.IG_BUSINESS_ID;
 
-  if (!token || !pageId || !igId) {
-    const msg = '[InstagramBot] Missing FB_ACCESS_TOKEN, FB_PAGE_ID, or IG_BUSINESS_ID';
+  if (!fbCreds.length || !igId) {
+    const msg = '[InstagramBot] Missing Facebook credentials or IG_BUSINESS_ID';
     logger.error(msg);
     await logToSupabase({ action: 'runInstagramBot', error: msg });
     return;
   }
 
   try {
-    // 1. Auto-post multiple images (Carousel)
-    const mediaIds = await Promise.all([
-      uploadImageToInstagram('https://example.com/image1.jpg', token, igId),
-      uploadImageToInstagram('https://example.com/image2.jpg', token, igId),
-    ]);
-    const postResp = await createCarouselPost(mediaIds, 'Auto-posted from bot', token, igId);
-    logger.info(`[InstagramBot] Carousel post created: ${postResp.id}`);
-    await logToSupabase({ action: 'createCarouselPost', mediaIds, response: postResp });
+    const { runWithRateLimit } = require('../utils/rateLimiter');
+    await runWithRateLimit(fbCreds, async (cred) => {
+      const token = cred.accessToken || cred.access_token;
+      if (!token) return;
 
-    // 2. Auto-comment on recent media
-    const recent = await getRecentMedia(igId, token);
-    for (let media of recent) {
-      const commentResp = await axios.post(
-        `https://graph.facebook.com/v18.0/${media.id}/comments`,
-        { message: 'Awesome content!', access_token: token }
-      );
-      logger.info(`[InstagramBot] Commented on: ${media.id}`);
-      await logToSupabase({ action: 'comment', mediaId: media.id, response: commentResp.data });
-    }
+      // 1. Auto-post multiple images (Carousel)
+      const mediaIds = await Promise.all([
+        uploadImageToInstagram('https://example.com/image1.jpg', token, igId),
+        uploadImageToInstagram('https://example.com/image2.jpg', token, igId),
+      ]);
+      const postResp = await createCarouselPost(mediaIds, 'Auto-posted from bot', token, igId);
+      logger.info(`[InstagramBot] Carousel post created: ${postResp.id}`);
+      await logToSupabase({ action: 'createCarouselPost', mediaIds, response: postResp, account: cred.pageId });
 
-    // 3. Auto-like recent posts
-    for (let media of recent.slice(0, 3)) {
-      const likeResp = await axios.post(
-        `https://graph.facebook.com/v18.0/${media.id}/likes`,
-        { access_token: token }
-      );
-      logger.info(`[InstagramBot] Liked: ${media.id}`);
-      await logToSupabase({ action: 'like', mediaId: media.id, response: likeResp.data });
-    }
-
-    // 4. Auto-reply to comments
-    for (let media of recent) {
-      const comments = await getComments(media.id, token);
-      for (let comment of comments.data) {
-        const replyResp = await axios.post(
-          `https://graph.facebook.com/v18.0/${comment.id}/replies`,
-          { message: 'Thanks for engaging!', access_token: token }
+      // 2. Auto-comment on recent media
+      const recent = await getRecentMedia(igId, token);
+      await runWithRateLimit(recent, async (media) => {
+        const commentResp = await axios.post(
+          `https://graph.facebook.com/v18.0/${media.id}/comments`,
+          { message: 'Awesome content!', access_token: token }
         );
-        logger.info(`[InstagramBot] Replied to comment: ${comment.id}`);
-        await logToSupabase({ action: 'reply', commentId: comment.id, response: replyResp.data });
-      }
-    }
+        logger.info(`[InstagramBot] Commented on: ${media.id}`);
+        await logToSupabase({ action: 'comment', mediaId: media.id, response: commentResp.data, account: cred.pageId });
+      }, { concurrency: 1, delayMs: 300 });
+
+      // 3. Auto-like recent posts (first 3)
+      await runWithRateLimit(recent.slice(0,3), async (media) => {
+        const likeResp = await axios.post(
+          `https://graph.facebook.com/v18.0/${media.id}/likes`,
+          { access_token: token }
+        );
+        logger.info(`[InstagramBot] Liked: ${media.id}`);
+        await logToSupabase({ action: 'like', mediaId: media.id, response: likeResp.data, account: cred.pageId });
+      }, { concurrency: 1, delayMs: 300 });
+
+      // 4. Auto-reply to comments
+      await runWithRateLimit(recent, async (media) => {
+        const comments = await getComments(media.id, token);
+        for (let comment of comments.data) {
+          const replyResp = await axios.post(
+            `https://graph.facebook.com/v18.0/${comment.id}/replies`,
+            { message: 'Thanks for engaging!', access_token: token }
+          );
+          logger.info(`[InstagramBot] Replied to comment: ${comment.id}`);
+          await logToSupabase({ action: 'reply', commentId: comment.id, response: replyResp.data, account: cred.pageId });
+        }
+      }, { concurrency: 1, delayMs: 300 });
+
+    }, { concurrency: 1, delayMs: 800 });
 
     logger.info('[InstagramBot] Task complete');
     await logToSupabase({ action: 'runInstagramBot', status: 'complete' });

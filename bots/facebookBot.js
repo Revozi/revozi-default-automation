@@ -2,8 +2,10 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/supabaseClient');
 
-const fbAccessToken = process.env.FB_ACCESS_TOKEN;
-const fbPageId = process.env.FB_PAGE_ID;
+const { loadProviderCredentials } = require('../utils/credentials');
+
+// Load configured Facebook credentials (supports multiple)
+const fbCredentials = loadProviderCredentials('FACEBOOK', ['pageId', 'accessToken']);
 
 async function logToSupabase(activity) {
   try {
@@ -17,22 +19,22 @@ async function logToSupabase(activity) {
   }
 }
 
-async function getProfile() {
+async function getProfile(accessToken) {
   const resp = await axios.get(
-    `https://graph.facebook.com/v18.0/me?access_token=${fbAccessToken}`
+    `https://graph.facebook.com/v18.0/me?access_token=${accessToken}`
   );
   logger.info(`[FacebookBot] Profile: ${JSON.stringify(resp.data)}`);
   await logToSupabase({ action: 'getProfile', data: resp.data });
   return resp.data;
 }
 
-async function postContent(message) {
+async function postContentForPage(pageId, accessToken, message) {
   const resp = await axios.post(
-    `https://graph.facebook.com/${fbPageId}/feed`,
-    { message, access_token: fbAccessToken }
+    `https://graph.facebook.com/${pageId}/feed`,
+    { message, access_token: accessToken }
   );
-  logger.info('[FacebookBot] Post published');
-  await logToSupabase({ action: 'postContent', message, resp: resp.data });
+  logger.info(`[FacebookBot] Post published to ${pageId}`);
+  await logToSupabase({ action: 'postContent', pageId, message, resp: resp.data });
   return resp.data;
 }
 
@@ -53,22 +55,32 @@ async function autoReplyToComments(postId, replyMessage) {
 async function runFacebookBot() {
   logger.info('[FacebookBot] Starting (Axios-based)');
 
-  if (!fbAccessToken || !fbPageId) {
-    const msg = '[FacebookBot] FB_ACCESS_TOKEN or FB_PAGE_ID not set in .env';
+  if (!fbCredentials.length) {
+    const msg = '[FacebookBot] No Facebook credentials configured (see FACEBOOK_CREDENTIALS or FACEBOOK_PAGE_ID/_1 vars)';
     logger.error(msg);
     await logToSupabase({ action: 'runFacebookBot', error: msg });
     return;
   }
 
   try {
-    await getProfile();
-    const post = await postContent('Hello from Axios Facebook bot!');
-    const postId = post?.id;
+    // Post to all configured pages
+    const { runWithRateLimit } = require('../utils/rateLimiter');
+    await runWithRateLimit(fbCredentials, async (cred) => {
+      const { pageId, accessToken } = cred;
+      if (!pageId || !accessToken) {
+        logger.warn('[FacebookBot] Skipping incomplete credential entry', { cred });
+        return;
+      }
 
-    if (postId) {
-      await commentOnContent(postId, 'Nice post!');
-      await autoReplyToComments(postId, 'Thanks for your comment!');
-    }
+      await getProfile(accessToken);
+      const post = await postContentForPage(pageId, accessToken, 'Hello from Axios Facebook bot!');
+      const postId = post?.id;
+
+      if (postId) {
+        await commentOnContent(postId, 'Nice post!');
+        await autoReplyToComments(postId, 'Thanks for your comment!');
+      }
+    }, { concurrency: 1, delayMs: 800 });
 
     logger.info('[FacebookBot] Task complete');
     await logToSupabase({ action: 'runFacebookBot', status: 'complete' });

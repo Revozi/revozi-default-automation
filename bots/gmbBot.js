@@ -2,8 +2,8 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/supabaseClient');
 
-const gmbAccessToken = process.env.GMB_ACCESS_TOKEN;
-const gmbLocationId = process.env.GMB_LOCATION_ID;
+const { loadProviderCredentials } = require('../utils/credentials');
+const gmbCreds = loadProviderCredentials('GMB', ['locationId', 'accessToken']);
 
 async function logToSupabase(activity) {
   try {
@@ -47,16 +47,25 @@ async function postContent(summary) {
 async function runGmbBot() {
   logger.info('[GmbBot] Starting (Axios-based)');
 
-  if (!gmbAccessToken || !gmbLocationId) {
-    const errMsg = '[GmbBot] GMB_ACCESS_TOKEN or GMB_LOCATION_ID not set in .env';
+  if (!gmbCreds.length) {
+    const errMsg = '[GmbBot] No GMB credentials configured (see GMB_CREDENTIALS or GMB_LOCATION_ID/_1)';
     logger.error(errMsg);
     await logToSupabase({ action: 'runGmbBot', error: errMsg });
     return;
   }
 
   try {
-    await getProfile(); // Informational/logging only
-    await postContent('Bot update!');
+    const { runWithRateLimit } = require('../utils/rateLimiter');
+    await runWithRateLimit(gmbCreds, async (cred) => {
+      const token = cred.accessToken || cred.access_token;
+      const locationId = cred.locationId || cred.location_id;
+      if (!token || !locationId) {
+        logger.warn('[GmbBot] Skipping incomplete credential', { cred });
+        return;
+      }
+      await postContentForAccount(locationId, token, 'Bot update!');
+    }, { concurrency: 1, delayMs: 800 });
+
     logger.info('[GmbBot] Task complete');
     await logToSupabase({ action: 'runGmbBot', status: 'complete' });
   } catch (error) {
@@ -64,6 +73,27 @@ async function runGmbBot() {
     logger.error(`[GmbBot] Error: ${errMsg}`);
     await logToSupabase({ action: 'runGmbBot', error: errMsg });
   }
+}
+
+async function postContentForAccount(locationId, token, summary) {
+  const payload = {
+    languageCode: 'en',
+    summary
+  };
+
+  const resp = await axios.post(
+    `https://mybusiness.googleapis.com/v4/accounts/${locationId}/localPosts`,
+    payload,
+    {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json'
+      }
+    }
+  );
+
+  logger.info(`[GmbBot] Post created for ${locationId}`);
+  await logToSupabase({ action: 'postContent', summary, account: locationId, response: resp.data });
 }
 
 module.exports = runGmbBot;

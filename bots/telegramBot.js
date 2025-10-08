@@ -2,8 +2,10 @@ const axios = require('axios');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/supabaseClient');
 
-const botToken = process.env.TELEGRAM_BOT_TOKEN;
-const chatId = process.env.TELEGRAM_CHAT_ID;
+const { loadProviderCredentials } = require('../utils/credentials');
+
+// Support multiple telegram bots via TELEGRAM_CREDENTIALS or TELEGRAM_BOT_TOKEN_1 etc.
+const telegramCreds = loadProviderCredentials('TELEGRAM', ['bot_token', 'chat_id']);
 
 async function logToSupabase(activity) {
   try {
@@ -64,15 +66,33 @@ async function autoReplyToMessages() {
 
 async function runTelegramBot() {
   logger.info('[TelegramBot] Starting (Supabase + Axios)');
-  if (!botToken || !chatId) {
-    logger.error('[TelegramBot] TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID not set in .env');
+  if (!telegramCreds.length) {
+    logger.error('[TelegramBot] No Telegram credentials configured (see TELEGRAM_CREDENTIALS or TELEGRAM_BOT_TOKEN/_1)');
     return;
   }
 
   try {
-    await getProfile();
-    await postContent('Hello from Supabase-integrated Telegram bot!');
-    await autoReplyToMessages();
+    const { runWithRateLimit } = require('../utils/rateLimiter');
+    await runWithRateLimit(telegramCreds, async (cred) => {
+      const token = cred.bot_token || cred.botToken;
+      const cid = cred.chat_id || cred.chatId;
+      if (!token || !cid) {
+        logger.warn('[TelegramBot] Skipping incomplete credential', { cred });
+        return;
+      }
+
+      const resp = await axios.get(`https://api.telegram.org/bot${token}/getMe`);
+      logger.info(`[TelegramBot] Profile: ${JSON.stringify(resp.data)}`);
+      await logToSupabase({ action: 'getProfile', data: resp.data, account: cid });
+
+      await axios.post(
+        `https://api.telegram.org/bot${token}/sendMessage`,
+        { chat_id: cid, text: 'Hello from Supabase-integrated Telegram bot!' }
+      );
+      logger.info('[TelegramBot] Message sent');
+      await logToSupabase({ action: 'postContent', account: cid });
+    }, { concurrency: 2, delayMs: 300 });
+
     logger.info('[TelegramBot] Task complete');
     await logToSupabase({ action: 'runTelegramBot', status: 'complete' });
   } catch (error) {
