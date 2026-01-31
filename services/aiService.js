@@ -1,5 +1,5 @@
 const fallbackPrompts = require('./fallbackPrompts'); 
-const { supabase } = require('./supabaseClient');
+const db = require('./db');
 const { openai } = require('./openaiClient');
 const logger = require('../utils/logger');
 const { translateText, batchTranslate, supportedLangs } = require('../utils/translate');
@@ -146,11 +146,10 @@ async function generateCaption({ prompt, platform, languages = supportedLangs, g
     };
 
     // Cache the result
-    await supabase.from('ai_outputs').insert({
-      platform,
-      prompt: finalPrompt,
-      output
-    });
+    await db.query(
+      `INSERT INTO automation.ai_outputs (prompt, response, model, created_at) VALUES ($1, $2, $3, NOW())`,
+      [prompt, response, model]
+    );
 
     return output;
   } catch (err) {
@@ -276,11 +275,10 @@ Blog Post:`,
     };
 
     // Cache the result
-    await supabase.from('ai_outputs').insert({
-      platform: 'blog',
-      prompt: finalPrompt,
-      output: output
-    });
+    await db.query(
+      `INSERT INTO automation.ai_outputs (prompt, response, model, created_at) VALUES ($1, $2, $3, NOW())`,
+      [prompt, response, model]
+    );
 
     return output;
   } catch (error) {

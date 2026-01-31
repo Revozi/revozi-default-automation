@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { getRewardsForUser, awardReward } = require('../services/rewardsService');
-const { supabase } = require('../services/supabaseClient');
+const db = require('../services/db');
 
 // List rewards for current user (expects req.user via middleware)
 router.get('/me', async (req, res) => {

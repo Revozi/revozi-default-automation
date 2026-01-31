@@ -1,19 +1,19 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
-const { supabase } = require('../services/supabaseClient');
+const db = require('../services/db');
 
 const pinterestToken = process.env.PINTEREST_ACCESS_TOKEN;
 const pinterestBoardId = process.env.PINTEREST_BOARD_ID;
 
 async function logToSupabase(activity) {
   try {
-    await supabase.from('engagements').insert([{
-      platform: 'pinterest',
-      ...activity,
-      created_at: new Date().toISOString()
-    }]);
+    await db.query(
+      `INSERT INTO automation.engagements (platform, action, error, account, created_at) 
+       VALUES ($1, $2, $3, $4, NOW())`,
+      [activity.platform || 'pinterest', activity.action, activity.error, activity.account]
+    );
   } catch (err) {
-    logger.error(`[PinterestBot] Supabase log error: ${err.message}`);
+    logger.error(`[PinterestBot] Database log error: ${err.message}`);
   }
 }
 

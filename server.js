@@ -4,7 +4,8 @@ const helmet = require("helmet");
 const cors = require("cors");
 const rateLimit = require("express-rate-limit");
 const compression = require("compression");
-const authRoutes = require("./routes/authRoutes");
+// REMOVED: authRoutes - Using Crimson Gateway auth instead
+const { serviceAuth, publicRoute } = require("./middlewares/serviceAuth");
 const trapRoutes = require("./routes/trapRoutes");
 const adminRoutes = require("./routes/adminRoutes");
 const unsubscribeRoutes = require("./routes/unsubscribeRoutes");
@@ -42,25 +43,37 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use("/auth", authRoutes);
-app.use("/trap", trapRoutes);
-app.use("/admin", adminRoutes);
-app.use("/unsubscribe", unsubscribeRoutes);
-app.use("/webhooks", twilioWebhook);
-app.use('/verify', verificationRoutes);
-app.use('/webhooks/rewards', rewardsWebhooks);
-app.use('/leaderboard', leaderboardRoutes);
-app.use('/rewards', rewardsRoutes);
+// ============================================
+// SERVICE AUTHENTICATION (The Bridge)
+// ============================================
+// Public routes (no authentication required)
+app.get("/health", publicRoute, (req, res) => {
+  res.json({ status: "ok", service: "dev-e-auto", port: 5100 });
+});
+app.use('/leaderboard', publicRoute, leaderboardRoutes); // Public leaderboard
+app.use("/unsubscribe", publicRoute, unsubscribeRoutes); // Email unsubscribe links
 
-app.get("/admin", (req, res) => {
+// Webhook routes (validate via Twilio signature or webhook secret, not service auth)
+app.use("/webhooks", twilioWebhook);
+app.use('/webhooks/rewards', rewardsWebhooks);
+
+// Protected routes (require service authentication from Gateway)
+app.use("/trap", serviceAuth, trapRoutes);
+app.use("/admin", serviceAuth, adminRoutes);
+app.use('/verify', serviceAuth, verificationRoutes);
+app.use('/rewards', serviceAuth, rewardsRoutes);
+
+// Serve admin HTML (protected)
+app.get("/admin", serviceAuth, (req, res) => {
   res.sendFile(path.join(__dirname, "public/admin.html"));
 });
 
 app.use(express.static("public"));
 
-const PORT = process.env.PORT || 5000;
+const PORT = process.env.PORT || 5100;
 app.listen(PORT, () => {
-  logger.info(`[Server] Listening on port ${PORT}`);
+  logger.info(`[Crimson Dev-E-Auto] Automation Worker listening on port ${PORT}`);
+  logger.info(`[Crimson Dev-E-Auto] Service Auth: ${process.env.SERVICE_KEY ? '✓ Configured' : '✗ Missing SERVICE_KEY'}`);
 });
 
 //  Start cron jobs

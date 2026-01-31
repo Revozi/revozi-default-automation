@@ -1,4 +1,4 @@
-const { supabase } = require('../services/supabaseClient');
+const db = require('../services/db');
 const logger = require('../utils/logger');
 
 // 🔹 Get all notifications for a user
@@ -6,15 +6,14 @@ exports.getUserNotifications = async (req, res) => {
   try {
     const { user_id } = req.params;
 
-    const { data, error } = await supabase
-      .from('notifications')
-      .select('*')
-      .eq('user_id', user_id)
-      .order('created_at', { ascending: false });
+    const result = await db.query(
+      `SELECT * FROM automation.notifications 
+       WHERE user_id = $1 
+       ORDER BY created_at DESC`,
+      [user_id]
+    );
 
-    if (error) throw error;
-
-    res.json(data);
+    res.json(result.rows);
   } catch (err) {
     logger.error(`[NOTIFICATIONS] Fetch error: ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch notifications' });
@@ -26,15 +25,14 @@ exports.createNotification = async (req, res) => {
   try {
     const { user_id, type, title, message, data } = req.body;
 
-    const { error, data: insertData } = await supabase
-      .from('notifications')
-      .insert([{ user_id, type, title, message, data }])
-      .select()
-      .single();
+    const result = await db.query(
+      `INSERT INTO automation.notifications (user_id, type, title, message, data)
+       VALUES ($1, $2, $3, $4, $5)
+       RETURNING *`,
+      [user_id, type, title, message, JSON.stringify(data)]
+    );
 
-    if (error) throw error;
-
-    res.status(201).json(insertData);
+    res.status(201).json(result.rows[0]);
   } catch (err) {
     logger.error(`[NOTIFICATIONS] Create error: ${err.message}`);
     res.status(500).json({ error: 'Failed to create notification' });
@@ -46,16 +44,19 @@ exports.markAsRead = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { data, error } = await supabase
-      .from('notifications')
-      .update({ read: true })
-      .eq('id', id)
-      .select()
-      .single();
+    const result = await db.query(
+      `UPDATE automation.notifications 
+       SET read = true 
+       WHERE id = $1 
+       RETURNING *`,
+      [id]
+    );
 
-    if (error) throw error;
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Notification not found' });
+    }
 
-    res.json({ message: 'Marked as read', data });
+    res.json({ message: 'Marked as read', data: result.rows[0] });
   } catch (err) {
     logger.error(`[NOTIFICATIONS] Mark read error: ${err.message}`);
     res.status(500).json({ error: 'Failed to mark notification as read' });
@@ -67,12 +68,10 @@ exports.deleteNotification = async (req, res) => {
   try {
     const { id } = req.params;
 
-    const { error } = await supabase
-      .from('notifications')
-      .delete()
-      .eq('id', id);
-
-    if (error) throw error;
+    await db.query(
+      `DELETE FROM automation.notifications WHERE id = $1`,
+      [id]
+    );
 
     res.json({ message: 'Notification deleted' });
   } catch (err) {
@@ -86,13 +85,12 @@ exports.markAllAsRead = async (req, res) => {
   try {
     const { user_id } = req.params;
 
-    const { error } = await supabase
-      .from('notifications')
-      .update({ read: true })
-      .eq('user_id', user_id)
-      .eq('read', false);
-
-    if (error) throw error;
+    await db.query(
+      `UPDATE automation.notifications 
+       SET read = true 
+       WHERE user_id = $1 AND read = false`,
+      [user_id]
+    );
 
     res.json({ message: 'All notifications marked as read' });
   } catch (err) {
@@ -100,17 +98,15 @@ exports.markAllAsRead = async (req, res) => {
     res.status(500).json({ error: 'Failed to mark all as read' });
   }
 };
+
 // 🔹 Get all notifications (admin view)
 exports.getAllNotifications = async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('notifications')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const result = await db.query(
+      `SELECT * FROM automation.notifications ORDER BY created_at DESC`
+    );
 
-    if (error) throw error;
-
-    res.json(data);
+    res.json(result.rows);
   } catch (err) {
     logger.error(`[NOTIFICATIONS][ADMIN] Fetch error: ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch all notifications' });

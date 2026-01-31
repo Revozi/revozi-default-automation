@@ -1,4 +1,4 @@
-const { supabase } = require('../services/supabaseClient');
+const db = require('../services/db');
 const logger = require('../utils/logger');
 const { publishPendingBlogs } = require('../blog/blogScheduler');
 const {generateImageFromPrompt} = require('../services/replicateService');
@@ -49,18 +49,16 @@ exports.createBlog = async (req, res) => {
       }
     }
 
-    // 🔹 (4) Save blog to Supabase
-    const { error } = await supabase.from('blogs').insert({
+    // 🔹 (4) Save blog to database
+    await db.insert('blogs', {
       title,
       slug,
       tags,
       content_markdown,
       content_html,
-      image_prompts,
+      image_prompts: JSON.stringify(image_prompts),
       image_urls,
     });
-
-    if (error) throw error;
 
     res.status(201).json({
       message: 'Blog created successfully',
@@ -82,13 +80,19 @@ exports.createBlog = async (req, res) => {
 // Get all blogs
 exports.getAllBlogs = async (req, res) => {
   try {
-    const { data, error } = await supabase
-      .from('blogs')
-      .select('*')
-      .order('created_at', { ascending: false });
+    const result = await db.query(
+      `SELECT * FROM automation.blogs ORDER BY created_at DESC`
+    );
 
-    if (error) throw error;
-    res.json(data);
+    // Parse JSON fields if needed
+    const blogs = result.rows.map(blog => ({
+      ...blog,
+      image_prompts: typeof blog.image_prompts === 'string' 
+        ? JSON.parse(blog.image_prompts) 
+        : blog.image_prompts
+    }));
+
+    res.json(blogs);
   } catch (err) {
     logger.error(`[GET_BLOGS] ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch blogs' });
@@ -99,14 +103,22 @@ exports.getAllBlogs = async (req, res) => {
 exports.getBlogById = async (req, res) => {
   const { id } = req.params;
   try {
-    const { data, error } = await supabase
-      .from('blogs')
-      .select('*')
-      .eq('id', id)
-      .single();
+    const result = await db.query(
+      `SELECT * FROM automation.blogs WHERE id = $1`,
+      [id]
+    );
 
-    if (error) throw error;
-    res.json(data);
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Blog not found' });
+    }
+
+    const blog = result.rows[0];
+    // Parse JSON fields if needed
+    if (typeof blog.image_prompts === 'string') {
+      blog.image_prompts = JSON.parse(blog.image_prompts);
+    }
+
+    res.json(blog);
   } catch (err) {
     logger.error(`[GET_BLOG_BY_ID] ${err.message}`);
     res.status(500).json({ error: 'Failed to fetch blog' });
@@ -119,8 +131,12 @@ exports.updateBlog = async (req, res) => {
   const updates = req.body;
 
   try {
-    const { error } = await supabase.from('blogs').update(updates).eq('id', id);
-    if (error) throw error;
+    // Convert arrays/objects to JSON strings if needed
+    if (updates.image_prompts && typeof updates.image_prompts !== 'string') {
+      updates.image_prompts = JSON.stringify(updates.image_prompts);
+    }
+
+    await db.update('blogs', updates, { id });
     res.json({ message: 'Blog updated successfully' });
   } catch (err) {
     logger.error(`[UPDATE_BLOG] ${err.message}`);
@@ -133,8 +149,7 @@ exports.deleteBlog = async (req, res) => {
   const { id } = req.params;
 
   try {
-    const { error } = await supabase.from('blogs').delete().eq('id', id);
-    if (error) throw error;
+    await db.delete('blogs', { id });
     res.json({ message: 'Blog deleted successfully' });
   } catch (err) {
     logger.error(`[DELETE_BLOG] ${err.message}`);
