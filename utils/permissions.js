@@ -1,21 +1,14 @@
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 
+// Role-only helpers
 async function getUserRole(userId) {
-  try {
-    const result = await db.query(
-      'SELECT role FROM automation.users WHERE id = $1',
-      [userId]
-    );
-    
-    if (result.rows.length === 0) {
-      return null;
-    }
-    
-    return result.rows[0].role;
-  } catch (error) {
-    console.error('Error fetching user role:', error);
-    return null;
-  }
+  if (!userId) return null;
+  const { data, error } = await supabase.from('users').select('role').eq('id', userId).single();
+  if (error) throw new Error(error.message);
+  return data?.role || null;
 }
 
 module.exports = { getUserRole };
+
+
+

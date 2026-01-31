@@ -1,62 +1,46 @@
-const db = require('./db');
-const logger = require('../utils/logger');
+const { supabase } = require('./supabaseClient');
 
-/**
- * Award tokens to a user
- */
-async function awardTokens(userId, amount, reason) {
-  try {
-    const result = await db.query(
-      `INSERT INTO automation.rewards (user_id, amount, reason, created_at)
-       VALUES ($1, $2, $3, NOW())
-       RETURNING *`,
-      [userId, amount, reason]
-    );
-    
-    logger.info(`[Rewards] Awarded ${amount} tokens to user ${userId}: ${reason}`);
-    return { success: true, data: result.rows[0] };
-  } catch (error) {
-    logger.error(`[Rewards] Failed to award tokens: ${error.message}`);
-    return { success: false, error: error.message };
-  }
+function computeBadge(points) {
+  if (points >= 1000) return 'gold';
+  if (points >= 500) return 'silver';
+  if (points >= 100) return 'bronze';
+  return 'none';
 }
 
-/**
- * Get user's total tokens
- */
-async function getUserTokens(userId) {
+async function awardReward({ user_id, reward_type = 'points', amount = 0, metadata = {} }) {
+  const payload = { user_id, reward_type, amount, metadata };
+
+  // Insert reward row if table exists
+  const { data, error } = await supabase.from('rewards').insert([payload]).select('*');
+
+  // Always update user points and badge in application layer to avoid relying on DB trigger
   try {
-    const result = await db.query(
-      'SELECT COALESCE(SUM(amount), 0) as total FROM automation.rewards WHERE user_id = $1',
-      [userId]
-    );
-    
-    return { success: true, total: parseInt(result.rows[0].total) };
-  } catch (error) {
-    logger.error(`[Rewards] Failed to get user tokens: ${error.message}`);
-    return { success: false, error: error.message };
+    const { data: userRow, error: uErr } = await supabase.from('users').select('points').eq('id', user_id).single();
+    if (uErr) {
+      // If user not found, return inserted reward or error
+      if (error) throw error;
+      return data ? data[0] : { user_id, reward_type, amount, metadata };
+    }
+
+    const currentPoints = (userRow && userRow.points) ? parseInt(userRow.points, 10) : 0;
+    const newPoints = currentPoints + (amount || 0);
+    const newBadge = computeBadge(newPoints);
+
+    const { error: upErr } = await supabase.from('users').update({ points: newPoints, badge: newBadge }).eq('id', user_id);
+    if (upErr) throw upErr;
+  } catch (e) {
+    // If rewards table insert failed earlier, surface that error
+    if (error) throw error;
+    throw e;
   }
+
+  return data ? data[0] : { user_id, reward_type, amount, metadata };
 }
 
-/**
- * Get user's reward history
- */
-async function getRewardHistory(userId, limit = 50) {
-  try {
-    const result = await db.query(
-      'SELECT * FROM automation.rewards WHERE user_id = $1 ORDER BY created_at DESC LIMIT $2',
-      [userId, limit]
-    );
-    
-    return { success: true, data: result.rows };
-  } catch (error) {
-    logger.error(`[Rewards] Failed to get reward history: ${error.message}`);
-    return { success: false, error: error.message };
-  }
+async function getRewardsForUser(user_id, limit = 50) {
+  const { data, error } = await supabase.from('rewards').select('*').eq('user_id', user_id).order('issued_at', { ascending: false }).limit(limit);
+  if (error) throw error;
+  return data;
 }
 
-module.exports = {
-  awardTokens,
-  getUserTokens,
-  getRewardHistory
-};
+module.exports = { awardReward, getRewardsForUser };

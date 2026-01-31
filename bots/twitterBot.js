@@ -1,6 +1,6 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 
 const { loadProviderCredentials } = require('../utils/credentials');
 
@@ -8,11 +8,11 @@ const { loadProviderCredentials } = require('../utils/credentials');
 const twitterCreds = loadProviderCredentials('TWITTER', ['user_id', 'bearer_token']);
 
 async function logToSupabase(activity) {
-  await db.query(
-      `INSERT INTO automation.engagements (platform, action, error, account, created_at) 
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [activity.platform || 'unknown', activity.action, activity.error, activity.account]
-    );
+  await supabase.from('engagements').insert([{
+    platform: 'twitter',
+    ...activity,
+    created_at: new Date().toISOString()
+  }]);
 }
 
 async function getProfile() {

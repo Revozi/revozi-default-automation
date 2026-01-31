@@ -1,7 +1,7 @@
 const assert = require('assert');
 const { generateCaption, generateBlogContent } = require('../services/aiService');
 const { translateText } = require('../utils/translate');
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 
 async function run() {
   console.log('Running lightweight multi-lang tests...');

@@ -1,4 +1,4 @@
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 const { generateCaption } = require('../services/aiService');
 const {
   generateImageFromPrompt,
@@ -59,30 +59,32 @@ exports.schedulePost = async (req, res) => {
 
 
     // 3. Save to generated_posts
-    await db.insert('generated_posts', {
+    await supabase.from('generated_posts').insert({
       platform,
       media_prompt,
       media_url: finalMediaUrl,
       queued: true,
-      metadata: JSON.stringify({
+      metadata: {
         captions: generatedContent.captions,
         transcripts: generatedContent.transcripts
-      }),
-      extras: JSON.stringify(generatedContent.extras)
+      },
+      extras: generatedContent.extras
     });
 
     // 4. Save to post_queue
-    await db.insert('post_queue', {
+    const { error } = await supabase.from('post_queue').insert({
       platform,
       media_url: finalMediaUrl,
-      metadata: JSON.stringify({
+      metadata: {
         captions: generatedContent.captions,
         transcripts: generatedContent.transcripts
-      }),
-      extras: JSON.stringify(generatedContent.extras),
+      },
+      extras: generatedContent.extras,
       priority: 0,
       scheduled_at: scheduled_at || new Date(),
     });
+
+    if (error) throw error;
 
     res.json({ message: 'Post scheduled successfully' });
   } catch (err) {
@@ -123,22 +125,24 @@ exports.retryFailedPosts = async (req, res) => {
     const MAX_RETRIES = parseInt(process.env.MAX_RETRIES || '3');
     const now = new Date().toISOString();
 
-    const result = await db.query(
-      `SELECT * FROM automation.post_queue WHERE status = $1 AND retries < $2`,
-      ['failed', MAX_RETRIES]
-    );
+    const { data: posts, error } = await supabase
+      .from('post_queue')
+      .select('*')
+      .eq('status', 'failed')
+      .lt('retries', MAX_RETRIES);
 
-    if (!result.rows.length) return res.json({ message: 'No failed posts to retry' });
+    if (error) return res.status(500).json({ error: error.message });
+    if (!posts.length) return res.json({ message: 'No failed posts to retry' });
 
-    const updates = result.rows.map((post) =>
-      db.update('post_queue', {
+    const updates = posts.map((post) =>
+      supabase.from('post_queue').update({
         status: 'pending',
         scheduled_at: now,
-      }, { id: post.id })
+      }).eq('id', post.id)
     );
 
     await Promise.all(updates);
-    res.json({ message: `${result.rows.length} post(s) marked for retry.` });
+    res.json({ message: `${posts.length} post(s) marked for retry.` });
   } catch (err) {
     logger.error(`[RETRY_FAILED] ${err.stack}`);
     res.status(500).json({ error: 'Retry failed posts failed' });
@@ -153,22 +157,25 @@ exports.retryByPlatform = async (req, res) => {
   if (!platform) return res.status(400).json({ error: 'Missing platform' });
 
   try {
-    const result = await db.query(
-      `SELECT * FROM automation.post_queue WHERE status = $1 AND platform = $2 AND retries < $3`,
-      ['failed', platform, parseInt(process.env.MAX_RETRIES || '3')]
-    );
+    const { data: posts, error } = await supabase
+      .from('post_queue')
+      .select('*')
+      .eq('status', 'failed')
+      .eq('platform', platform)
+      .lt('retries', parseInt(process.env.MAX_RETRIES || '3'));
 
-    if (!result.rows.length) return res.json({ message: `No failed posts for ${platform}` });
+    if (error) return res.status(500).json({ error: error.message });
+    if (!posts.length) return res.json({ message: `No failed posts for ${platform}` });
 
-    const updates = result.rows.map((post) =>
-      db.update('post_queue', {
+    const updates = posts.map((post) =>
+      supabase.from('post_queue').update({
         status: 'pending',
         scheduled_at: now,
-      }, { id: post.id })
+      }).eq('id', post.id)
     );
 
     await Promise.all(updates);
-    res.json({ message: `${result.rows.length} post(s) on ${platform} requeued.` });
+    res.json({ message: `${posts.length} post(s) on ${platform} requeued.` });
   } catch (err) {
     logger.error(`[RETRY_PLATFORM] ${err.stack}`);
     res.status(500).json({ error: 'Retry by platform failed' });
@@ -178,26 +185,26 @@ exports.retryByPlatform = async (req, res) => {
 // 5. View full post queue with language support
 exports.getPostQueue = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT * FROM automation.post_queue ORDER BY scheduled_at ASC`
-    );
+    const { data, error } = await supabase
+      .from('post_queue')
+      .select('*')
+      .order('scheduled_at', { ascending: true });
+
+    if (error) return res.status(500).json({ error: error.message });
 
     // Handle language selection and fallback
-    const localizedData = result.rows.map(post => {
-      const metadata = typeof post.metadata === 'string' ? JSON.parse(post.metadata) : post.metadata;
-      const extras = typeof post.extras === 'string' ? JSON.parse(post.extras) : post.extras;
-      
-      const captions = metadata?.captions || { en: post.caption }; // Fallback for legacy posts
-      const transcripts = metadata?.transcripts || {};
-      const geoAware = extras?.geoAware || {};
+    const localizedData = data.map(post => {
+      const captions = post.metadata?.captions || { en: post.caption }; // Fallback for legacy posts
+      const transcripts = post.metadata?.transcripts || {};
+      const geoAware = post.extras?.geoAware || {};
 
       return {
         ...post,
         caption: captions[req.targetLang] || captions.en, // Fallback to English
         transcript: transcripts[req.targetLang] || transcripts.en,
         geoMessage: geoAware[req.targetLang] || geoAware.en,
-        originalMetadata: metadata, // Keep full metadata for reference
-        originalExtras: extras
+        originalMetadata: post.metadata, // Keep full metadata for reference
+        originalExtras: post.extras
       };
     });
 
@@ -208,33 +215,50 @@ exports.getPostQueue = async (req, res) => {
   }
 };
 
-// 6. View generated posts
+// 6. Get generated posts with language support
 exports.getGeneratedPosts = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT * FROM automation.generated_posts ORDER BY created_at DESC LIMIT 100`
-    );
+    const { data, error } = await supabase
+      .from('generated_posts')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) return res.status(500).json({ error: error.message });
 
     // Handle language selection and fallback
-    const localizedData = result.rows.map(post => {
-      const metadata = typeof post.metadata === 'string' ? JSON.parse(post.metadata) : post.metadata;
-      const extras = typeof post.extras === 'string' ? JSON.parse(post.extras) : post.extras;
-      
-      const captions = metadata?.captions || { en: post.caption }; // Fallback for legacy posts
-      const transcripts = metadata?.transcripts || {};
-      const geoAware = extras?.geoAware || {};
+    const localizedData = data.map(post => {
+      const captions = post.metadata?.captions || { en: post.caption }; // Fallback for legacy posts
+      const transcripts = post.metadata?.transcripts || {};
+      const geoAware = post.extras?.geoAware || {};
 
       return {
         ...post,
         caption: captions[req.targetLang] || captions.en, // Fallback to English
         transcript: transcripts[req.targetLang] || transcripts.en,
         geoMessage: geoAware[req.targetLang] || geoAware.en,
-        originalMetadata: metadata, // Keep full metadata for reference
-        originalExtras: extras
+        originalMetadata: post.metadata, // Keep full metadata for reference
+        originalExtras: post.extras
       };
     });
 
     res.json(localizedData);
+  } catch (err) {
+    logger.error(`[GET_GENERATED_POSTS] ${err.stack}`);
+    res.status(500).json({ error: 'Failed to load generated posts' });
+  }
+};
+
+// 6. View generated posts
+exports.getGeneratedPosts = async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('generated_posts')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .limit(100);
+
+    if (error) return res.status(500).json({ error: error.message });
+    res.json(data);
   } catch (err) {
     logger.error(`[GET_GENERATED_POSTS] ${err.stack}`);
     res.status(500).json({ error: 'Failed to fetch generated posts' });
@@ -245,7 +269,8 @@ exports.getGeneratedPosts = async (req, res) => {
 exports.deletePost = async (req, res) => {
   const { id } = req.params;
   try {
-    await db.delete('post_queue', { id });
+    const { error } = await supabase.from('post_queue').delete().eq('id', id);
+    if (error) return res.status(500).json({ error: error.message });
     res.json({ message: 'Post deleted successfully' });
   } catch (err) {
     logger.error(`[DELETE_POST] ${err.stack}`);

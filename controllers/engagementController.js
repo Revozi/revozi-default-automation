@@ -1,4 +1,4 @@
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 const logger = require('../utils/logger');
 
 // THRESHOLDS
@@ -14,29 +14,40 @@ exports.engagementCallback = async (req, res) => {
     }
 
     // Insert engagement metrics
-    const result = await db.query(
-      `INSERT INTO automation.engagements (post_id, platform, likes, shares, comments, views, user_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
-       RETURNING *`,
-      [post_id, platform, likes, shares, comments, views, user_id]
-    );
+    const { data, error: insertError } = await supabase
+      .from('engagements')
+      .insert([
+        {
+          post_id,
+          platform,
+          likes,
+          shares,
+          comments,
+          views,
+          user_id,
+        },
+      ])
+      .select()
+      .single();
 
-    const engagement = result.rows[0];
+    if (insertError) throw insertError;
 
     logger.info(`[ENGAGEMENT] Saved metrics for post ${post_id} on ${platform}`);
 
     // Check reward condition
     const meetsThreshold = likes >= LIKE_THRESHOLD || views >= VIEW_THRESHOLD;
     if (meetsThreshold) {
-      logger.info(`[ENGAGEMENT] Threshold met for post ${post_id}. Calling function: award_tokens_if_needed`);
+      logger.info(`[ENGAGEMENT] Threshold met for post ${post_id}. Calling RPC: award_tokens_if_needed`);
 
-      // Call PostgreSQL function
-      const rewardResult = await db.query(
-        `SELECT automation.award_tokens_if_needed($1, $2) as result`,
-        [post_id, user_id]
-      );
+      const { data: rewardData, error: rewardError } = await supabase.rpc('award_tokens_if_needed', {
+        input_post_id: post_id,
+        input_user_id: user_id,
+      });
 
-      const rewardData = rewardResult.rows[0]?.result;
+      if (rewardError) {
+        logger.error(`[ENGAGEMENT] RPC error: ${rewardError.message}`);
+        return res.status(500).json({ error: 'Reward function failed', detail: rewardError.message });
+      }
 
       return res.json({ message: 'Engagement saved and reward triggered', reward: rewardData });
     }
@@ -47,14 +58,16 @@ exports.engagementCallback = async (req, res) => {
     return res.status(500).json({ error: 'Failed to record engagement', detail: err.message });
   }
 };
-
 exports.getAllEngagements = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT * FROM automation.engagements ORDER BY created_at DESC`
-    );
+    const { data, error } = await supabase
+      .from('engagements')
+      .select('*')
+      .order('created_at', { ascending: false });
 
-    return res.json({ engagements: result.rows });
+    if (error) throw error;
+
+    return res.json({ engagements: data });
   } catch (err) {
     logger.error(`[ENGAGEMENT_GET_ALL] ${err.message}`);
     return res.status(500).json({ error: 'Failed to fetch engagements', detail: err.message });

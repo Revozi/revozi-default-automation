@@ -1,5 +1,5 @@
 const dispatcher = require('../cron/dispatcher');
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 
 (async () => {
   console.log('Running quick dispatcher check...');

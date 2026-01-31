@@ -1,6 +1,6 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 
 const { loadProviderCredentials } = require('../utils/credentials');
 
@@ -9,11 +9,11 @@ const fbCredentials = loadProviderCredentials('FACEBOOK', ['pageId', 'accessToke
 
 async function logToSupabase(activity) {
   try {
-    await db.query(
-      `INSERT INTO automation.engagements (platform, action, error, account, created_at) 
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [activity.platform || 'unknown', activity.action, activity.error, activity.account]
-    );
+    await supabase.from('engagements').insert([{
+      platform: 'facebook',
+      ...activity,
+      created_at: new Date().toISOString()
+    }]);
   } catch (err) {
     logger.error(`[FacebookBot] Supabase log error: ${err.message}`);
   }

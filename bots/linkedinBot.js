@@ -1,17 +1,17 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 
 const linkedinAccessToken = process.env.LINKEDIN_ACCESS_TOKEN;
 const linkedinPersonUrn = process.env.LINKEDIN_PERSON_URN;
 
 async function logToSupabase(activity) {
   try {
-    await db.query(
-      `INSERT INTO automation.engagements (platform, action, error, account, created_at) 
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [activity.platform || 'unknown', activity.action, activity.error, activity.account]
-    );
+    await supabase.from('engagements').insert([{
+      platform: 'linkedin',
+      ...activity,
+      created_at: new Date().toISOString()
+    }]);
   } catch (err) {
     logger.error(`[LinkedInBot] Supabase log error: ${err.message}`);
   }

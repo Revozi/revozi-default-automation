@@ -1,4 +1,4 @@
-const db = require("../services/db")
+const { supabase } = require("../services/supabaseClient")
 const fs = require("fs")
 const path = require("path")
 const logger = require("../utils/logger")
@@ -27,11 +27,11 @@ const botFunctions = {
 // --- BOT STATUS TRACKING ---
 // --- Utility: fetch interval from settings or default ---
 async function getBotInterval(botName) {
-  const result = await db.query(
-    `SELECT value FROM automation.settings WHERE key = $1`,
-    [`${botName}_interval`]
-  );
-  
+  const { data, error } = await supabase
+    .from('settings')
+    .select('value')
+    .eq('key', `${botName}_interval`)
+    .single();
   // Defaults
   const defaults = {
     instagram: '*/15 * * * *',
@@ -43,11 +43,7 @@ async function getBotInterval(botName) {
     gmb: '45 * * * *',
     pinterest: '50 * * * *',
   };
-  
-  let interval = (result.rows[0] && typeof result.rows[0].value === 'string' && result.rows[0].value.trim()) 
-    ? result.rows[0].value.trim() 
-    : defaults[botName] || '*/15 * * * *';
-  
+  let interval = (data && typeof data.value === 'string' && data.value.trim()) ? data.value.trim() : defaults[botName] || '*/15 * * * *';
   // Validate: must be a non-empty string
   if (typeof interval !== 'string' || !interval.length) {
     interval = '*/15 * * * *';
@@ -68,16 +64,17 @@ async function updateBotStatus(botName, status, lastError = null) {
   if (status === 'completed' || status === 'error') {
     update.last_run = new Date();
   }
-  
-  await db.upsert('bot_status', update, ['bot_name']);
+  await supabase.from('bot_status').upsert(update, { onConflict: ['bot_name'] });
 }
 
 async function getBotStatus(botName) {
-  const result = await db.query(
-    `SELECT * FROM automation.bot_status WHERE bot_name = $1`,
-    [botName]
-  );
-  return result.rows[0] || null;
+  const { data, error } = await supabase
+    .from('bot_status')
+    .select('*')
+    .eq('bot_name', botName)
+    .single();
+  if (error) return null;
+  return data;
 }
 
 // --- Cron Jobs Control ---
@@ -146,10 +143,9 @@ exports.runBotInternal = async (botName) => {
 // Dashboard stats
 exports.getStats = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT COUNT(*) as count FROM automation.users`
-    );
-    const totalUsers = parseInt(result.rows[0].count) || 0;
+    const { count: totalUsers } = await supabase
+      .from('users')
+      .select('*', { count: 'exact', head: true })
     const activeBots = Object.keys(botFunctions).length
 
     const logPath = path.join(__dirname, "../logs/trapEvents.log")
@@ -160,7 +156,7 @@ exports.getStats = async (req, res) => {
     }
 
     res.json({
-      totalUsers,
+      totalUsers: totalUsers || 0,
       activeBots,
       trapTriggers,
       cronJobs: Object.keys(cronJobs).length,
@@ -173,9 +169,9 @@ exports.getStats = async (req, res) => {
 // System status
 exports.getStatus = async (req, res) => {
   try {
-    // PostgreSQL health check
-    const result = await db.query(`SELECT 1 as health`);
-    const dbStatus = result.rows.length > 0;
+    // Supabase health check
+    const { error } = await supabase.from('users').select('*').limit(1)
+    const dbStatus = !error
 
     // Example: check if at least one bot is healthy (dryRun)
     let botHealth = false
@@ -194,7 +190,7 @@ exports.getStatus = async (req, res) => {
     }
 
     res.json({
-      database: dbStatus,
+      supabase: dbStatus,
       server: true,
       cronJobs: Object.keys(cronJobs).length > 0,
       botHealth,
@@ -237,11 +233,12 @@ exports.getActivity = async (req, res) => {
 // User management
 exports.getUsers = async (req, res) => {
   try {
-    const result = await db.query(
-      `SELECT id, email, phone, referrer, created_at, notified, reminders_sent, active 
-       FROM automation.users`
-    );
-    res.json(result.rows);
+    // Use Supabase for users
+    const { data: users, error } = await supabase
+      .from('users')
+      .select('id, email, phone, referrer, created_at, notified, reminders_sent, active')
+    if (error) return res.status(500).json({ error: "Failed to get users" })
+    res.json(users)
   } catch (error) {
     res.status(500).json({ error: "Failed to get users" })
   }
@@ -249,11 +246,12 @@ exports.getUsers = async (req, res) => {
 
 exports.deleteUser = async (req, res) => {
   try {
-    const { userId } = req.params;
-    await db.query(
-      `DELETE FROM automation.users WHERE id = $1`,
-      [userId]
-    );
+    const { userId } = req.params
+    const { error } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', userId)
+    if (error) return res.status(500).json({ error: "Failed to delete user" })
     res.json({ message: "User deleted successfully" })
   } catch (error) {
     res.status(500).json({ error: "Failed to delete user" })
@@ -313,17 +311,17 @@ exports.restartCronJobs = async (req, res) => {
 // Get status of all bots
 exports.getBotStatus = async (req, res) => {
   try {
-    const result = await db.query(`SELECT * FROM automation.bot_status`);
-    const statusMap = {};
-    result.rows.forEach(entry => {
+    const { data } = await supabase.from('bot_status').select('*')
+    const statusMap = {}
+    data.forEach(entry => {
       statusMap[entry.bot_name] = {
         lastRun: entry.last_run,
         status: entry.status,
         lastError: entry.last_error,
         updatedAt: entry.updated_at
-      };
-    });
-    res.json(statusMap);
+      }
+    })
+    res.json(statusMap)
   } catch (err) {
     res.status(500).json({ error: 'Failed to get statuses' })
   }
@@ -434,11 +432,11 @@ exports.saveSettings = async (req, res) => {
     const settings = req.body
     logger.info("[Admin] Settings updated")
     for (const [key, value] of Object.entries(settings)) {
-      await db.upsert('settings', {
+      await supabase.from('settings').upsert({
         key,
         value,
         updated_at: new Date()
-      }, ['key']);
+      })
     }
     res.json({ message: "Settings saved successfully" })
   } catch (error) {
@@ -448,9 +446,10 @@ exports.saveSettings = async (req, res) => {
 
 exports.getSettings = async (req, res) => {
   try {
-    const result = await db.query(`SELECT * FROM automation.settings`);
-    const formatted = Object.fromEntries(result.rows.map(({ key, value }) => [key, value]));
-    res.json(formatted);
+    const { data, error } = await supabase.from('settings').select('*')
+    if (error) return res.status(500).json({ error: 'Failed to load settings' })
+    const formatted = Object.fromEntries(data.map(({ key, value }) => [key, value]))
+    res.json(formatted)
   } catch (error) {
     res.status(500).json({ error: 'Failed to load settings' })
   }

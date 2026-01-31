@@ -1,6 +1,6 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
-const db = require('../services/db');
+const { supabase } = require('../services/supabaseClient');
 
 const discordBotToken = process.env.DISCORD_BOT_TOKEN;
 const discordGuildId = process.env.DISCORD_GUILD_ID;
@@ -8,11 +8,11 @@ const discordChannelId = process.env.DISCORD_CHANNEL_ID;
 
 async function logToSupabase(activity) {
   try {
-    await db.query(
-      `INSERT INTO automation.engagements (platform, action, error, account, created_at) 
-       VALUES ($1, $2, $3, $4, NOW())`,
-      [activity.platform || 'unknown', activity.action, activity.error, activity.account]
-    );
+    await supabase.from('engagements').insert([{
+      platform: 'discord',
+      ...activity,
+      created_at: new Date().toISOString()
+    }]);
   } catch (err) {
     logger.error(`[DiscordBot] Supabase log error: ${err.message}`);
   }
