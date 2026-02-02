@@ -54,7 +54,9 @@ exports.login = async (req, res) => {
     await supabase.from('users').update({ last_active: new Date() }).eq('email', email);
   // Attach minimal auth context (simulate session) for downstream middleware
   req.user = { id: user.id, name: user.name, email: user.email, role: user.role };
-  res.json({ message: 'Login successful', user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+  // Generate a simple token for the frontend (base64 encoded user info + timestamp)
+  const token = Buffer.from(JSON.stringify({ id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 })).toString('base64');
+  res.json({ message: 'Login successful', token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
   } catch (err) {
     res.status(500).json({ error: 'Login failed' });
   }
