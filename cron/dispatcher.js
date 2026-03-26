@@ -17,7 +17,7 @@ function dispatcherCron() {
       .lte('scheduled_at', now)
       .order('priority', { ascending: false });
 
-    for (const post of posts) {
+    for (const post of (posts || [])) {
       const runBot = botMap[post.platform];
       if (!runBot) {
         logger.error(`[DISPATCHER] No bot for ${post.platform}`);
