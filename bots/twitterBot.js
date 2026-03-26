@@ -1,11 +1,8 @@
 const axios = require('axios');
+const crypto = require('crypto');
+const OAuth = require('oauth-1.0a');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/supabaseClient');
-
-const { loadProviderCredentials } = require('../utils/credentials');
-
-// Load twitter credentials; support multiple via TWITTER_CREDENTIALS or numbered envs
-const twitterCreds = loadProviderCredentials('TWITTER', ['user_id', 'bearer_token']);
 
 async function logToSupabase(activity) {
   await supabase.from('engagements').insert([{
@@ -15,111 +12,59 @@ async function logToSupabase(activity) {
   }]);
 }
 
-async function getProfile() {
-  const resp = await axios.get(
-    `https://api.twitter.com/2/users/${userId}`,
-    { headers: { Authorization: `Bearer ${bearerToken}` } }
-  );
-  logger.info(`[TwitterBot] Profile: ${JSON.stringify(resp.data)}`);
-  await logToSupabase({ action: 'getProfile', data: resp.data });
+async function postTweet(text, cred) {
+  const oauth = OAuth({
+    consumer: { key: cred.api_key, secret: cred.api_secret },
+    signature_method: 'HMAC-SHA1',
+    hash_function(base_string, key) {
+      return crypto.createHmac('sha1', key).update(base_string).digest('base64');
+    }
+  });
+  const url = 'https://api.twitter.com/2/tweets';
+  const token = { key: cred.access_token, secret: cred.access_token_secret };
+  const authHeader = oauth.toHeader(oauth.authorize({ url, method: 'POST' }, token));
+  const resp = await axios.post(url, { text }, {
+    headers: { ...authHeader, 'Content-Type': 'application/json' }
+  });
   return resp.data;
-}
-
-async function postContent(text) {
-  const resp = await axios.post(
-    'https://api.twitter.com/2/tweets',
-    { text },
-    { headers: { Authorization: `Bearer ${bearerToken}`, 'Content-Type': 'application/json' } }
-  );
-  logger.info(`[TwitterBot] Tweeted: ${text}`);
-  await logToSupabase({ action: 'postContent', text, resp: resp.data });
-  return resp.data;
-}
-
-async function likeContent(tweetId) {
-  if (!userId) return;
-  await axios.post(
-    `https://api.twitter.com/2/users/${userId}/likes`,
-    { tweet_id: tweetId },
-    { headers: { Authorization: `Bearer ${bearerToken}` } }
-  );
-  logger.info(`[TwitterBot] Liked tweet: ${tweetId}`);
-  await logToSupabase({ action: 'likeContent', tweetId });
-}
-
-async function commentOnContent(tweetId, text) {
-  const resp = await axios.post(
-    'https://api.twitter.com/2/tweets',
-    { text, reply: { in_reply_to_tweet_id: tweetId } },
-    { headers: { Authorization: `Bearer ${bearerToken}`, 'Content-Type': 'application/json' } }
-  );
-  logger.info(`[TwitterBot] Replied to ${tweetId}: ${text}`);
-  await logToSupabase({ action: 'commentOnContent', tweetId, text, resp: resp.data });
-}
-
-async function autoReplyToComments(tweetId, replyText) {
-  // Not implemented: would require streaming or polling mentions.
-  logger.info('[TwitterBot] autoReplyToComments: Not implemented');
 }
 
 async function runTwitterBot() {
   logger.info('[TwitterBot] Starting (Axios-based)');
-  if (!twitterCreds.length) {
-    logger.error('[TwitterBot] No Twitter credentials configured (see TWITTER_CREDENTIALS or TWITTER_USER_ID/_1)');
+  const apiKey = process.env.TWITTER_API_KEY;
+  const apiSecret = process.env.TWITTER_API_SECRET;
+  const accessToken = process.env.TWITTER_ACCESS_TOKEN;
+  const accessTokenSecret = process.env.TWITTER_ACCESS_TOKEN_SECRET;
+  if (!apiKey || !apiSecret || !accessToken || !accessTokenSecret) {
+    logger.error('[TwitterBot] Missing OAuth credentials');
     return;
   }
-
+  const cred = { api_key: apiKey, api_secret: apiSecret, access_token: accessToken, access_token_secret: accessTokenSecret };
   try {
-    const { runWithRateLimit } = require('../utils/rateLimiter');
-    await runWithRateLimit(twitterCreds, async (cred) => {
-      const bearer = cred.bearer_token || cred.bearerToken;
-      const uid = cred.user_id || cred.userId;
-      if (!bearer || !uid) {
-        logger.warn('[TwitterBot] Skipping incomplete credential', { cred });
-        return;
+    const { data: posts, error } = await supabase
+      .from('post_queue')
+      .select('*')
+      .eq('platform', 'twitter')
+      .eq('status', 'pending')
+      .order('priority', { ascending: false })
+      .limit(5);
+    if (error) { logger.error(`[TwitterBot] Supabase error: ${error.message}`); return; }
+    if (!posts || posts.length === 0) { logger.info('[TwitterBot] No pending posts in queue'); return; }
+    logger.info(`[TwitterBot] Found ${posts.length} pending post(s)`);
+    for (const post of posts) {
+      try {
+        const result = await postTweet(post.caption, cred);
+        logger.info(`[TwitterBot] Tweeted: ${post.caption}`);
+        await supabase.from('post_queue').update({ status: 'published', last_attempt_at: new Date().toISOString() }).eq('id', post.id);
+        await logToSupabase({ action: 'postContent', text: post.caption, resp: result });
+      } catch (err) {
+        logger.error(`[TwitterBot] Failed to post: ${err.response?.data?.detail || err.message}`);
+        await supabase.from('post_queue').update({ status: 'failed', last_attempt_at: new Date().toISOString(), retries: (post.retries || 0) + 1 }).eq('id', post.id);
       }
-
-      const profileResp = await axios.get(
-        `https://api.twitter.com/2/users/${uid}`,
-        { headers: { Authorization: `Bearer ${bearer}` } }
-      );
-      logger.info(`[TwitterBot] Profile for ${uid}: ${JSON.stringify(profileResp.data)}`);
-      await logToSupabase({ action: 'getProfile', data: profileResp.data, account: uid });
-
-      // Post a tweet
-      const tweetResp = await axios.post(
-        'https://api.twitter.com/2/tweets',
-        { text: 'Hello world from Axios bot!' },
-        { headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' } }
-      );
-
-      const tweet = tweetResp.data;
-      logger.info(`[TwitterBot] Tweeted for ${uid}`);
-      await logToSupabase({ action: 'postContent', account: uid, text: 'Hello world from Axios bot!', resp: tweet });
-
-      // Like and reply if possible
-      const tweetId = tweet?.data?.id || tweet?.id;
-      if (tweetId) {
-        await axios.post(
-          `https://api.twitter.com/2/users/${uid}/likes`,
-          { tweet_id: tweetId },
-          { headers: { Authorization: `Bearer ${bearer}` } }
-        );
-        await axios.post(
-          'https://api.twitter.com/2/tweets',
-          { text: 'Nice tweet!', reply: { in_reply_to_tweet_id: tweetId } },
-          { headers: { Authorization: `Bearer ${bearer}`, 'Content-Type': 'application/json' } }
-        );
-        logger.info(`[TwitterBot] Liked and replied to ${tweetId} for ${uid}`);
-        await logToSupabase({ action: 'likeAndReply', account: uid, tweetId });
-      }
-    }, { concurrency: 1, delayMs: 500 });
-
+    }
     logger.info('[TwitterBot] Automation complete');
-    await logToSupabase({ action: 'runTwitterBot', status: 'complete' });
   } catch (error) {
-    logger.error(`[TwitterBot] Error: ${error.response?.data?.detail || error.message}`);
-    await logToSupabase({ action: 'runTwitterBot', error: error.message });
+    logger.error(`[TwitterBot] Error: ${error.message}`);
   }
 }
 
