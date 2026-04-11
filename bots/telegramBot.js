@@ -1,10 +1,9 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/pgClient');
-
 const { loadProviderCredentials } = require('../utils/credentials');
+const { autoGenerateContent } = require('../utils/autoContent');
 
-// Support multiple telegram bots via TELEGRAM_CREDENTIALS or TELEGRAM_BOT_TOKEN_1 etc.
 const telegramCreds = loadProviderCredentials('TELEGRAM', ['bot_token', 'chat_id']);
 
 async function logToSupabase(activity) {
@@ -19,56 +18,40 @@ async function logToSupabase(activity) {
   }
 }
 
-async function getProfile() {
-  try {
-    const resp = await axios.get(`https://api.telegram.org/bot${botToken}/getMe`);
-    logger.info(`[TelegramBot] Profile: ${JSON.stringify(resp.data)}`);
-    await logToSupabase({ action: 'getProfile', data: resp.data });
-    return resp.data;
-  } catch (err) {
-    logger.error(`[TelegramBot] getProfile error: ${err.message}`);
-    await logToSupabase({ action: 'getProfile', error: err.message });
-  }
+async function fetchNextQueuedPost() {
+  const now = new Date().toISOString();
+  const { data: posts } = await supabase
+    .from('post_queue')
+    .select('*')
+    .eq('status', 'pending')
+    .eq('platform', 'telegram')
+    .lte('scheduled_at', now)
+    .order('priority', { ascending: false })
+    .limit(1);
+  return Array.isArray(posts) && posts.length > 0 ? posts[0] : null;
 }
 
-async function postContent(message) {
-  try {
-    const resp = await axios.post(
-      `https://api.telegram.org/bot${botToken}/sendMessage`,
-      { chat_id: chatId, text: message }
-    );
-    logger.info('[TelegramBot] Message sent');
-    await logToSupabase({ action: 'postContent', message, response: resp.data });
-  } catch (err) {
-    logger.error(`[TelegramBot] postContent error: ${err.message}`);
-    await logToSupabase({ action: 'postContent', error: err.message });
-  }
-}
-
-async function autoReplyToMessages() {
-  try {
-    const resp = await axios.get(
-      `https://api.telegram.org/bot${botToken}/getUpdates`
-    );
-    const updates = resp.data.result || [];
-    for (const update of updates) {
-      if (update.message && update.message.text && update.message.text.toLowerCase().includes('hello')) {
-        await postContent('Hi! This is an auto-reply.');
-        logger.info('[TelegramBot] Auto-replied to message');
-        await logToSupabase({ action: 'autoReplyToMessages', update });
-      }
-    }
-  } catch (err) {
-    logger.error(`[TelegramBot] autoReplyToMessages error: ${err.message}`);
-    await logToSupabase({ action: 'autoReplyToMessages', error: err.message });
-  }
-}
-
-async function runTelegramBot() {
+async function runTelegramBot(payload = {}) {
   logger.info('[TelegramBot] Starting (Supabase + Axios)');
+
   if (!telegramCreds.length) {
     logger.error('[TelegramBot] No Telegram credentials configured (see TELEGRAM_CREDENTIALS or TELEGRAM_BOT_TOKEN/_1)');
     return;
+  }
+
+  let textToPost = String(payload.caption || payload.text || '').trim();
+  let queuedPost = null;
+
+  if (!textToPost) {
+    queuedPost = await fetchNextQueuedPost();
+    if (queuedPost) {
+      textToPost = String(queuedPost.caption || queuedPost.text || '').trim();
+    }
+    if (!textToPost) {
+      logger.info('[TelegramBot] Queue empty — auto-generating Revozi content...');
+      const generated = await autoGenerateContent('telegram');
+      textToPost = generated.caption;
+    }
   }
 
   try {
@@ -81,17 +64,20 @@ async function runTelegramBot() {
         return;
       }
 
-      const resp = await axios.get(`https://api.telegram.org/bot${token}/getMe`);
-      logger.info(`[TelegramBot] Profile: ${JSON.stringify(resp.data)}`);
-      await logToSupabase({ action: 'getProfile', data: resp.data, account: cid });
-
-      await axios.post(
-        `https://api.telegram.org/bot${token}/sendMessage`,
-        { chat_id: cid, text: 'Hello from Supabase-integrated Telegram bot!' }
-      );
-      logger.info('[TelegramBot] Message sent');
-      await logToSupabase({ action: 'postContent', account: cid });
+      await axios.post(`https://api.telegram.org/bot${token}/sendMessage`, {
+        chat_id: cid,
+        text: textToPost,
+        parse_mode: 'HTML'
+      });
+      logger.info(`[TelegramBot] Message sent to chat ${cid}`);
+      await logToSupabase({ action: 'postContent', text: textToPost, account: cid });
     }, { concurrency: 2, delayMs: 300 });
+
+    if (queuedPost) {
+      await supabase.from('post_queue')
+        .update({ status: 'posted', last_attempt_at: new Date() })
+        .eq('id', queuedPost.id);
+    }
 
     logger.info('[TelegramBot] Task complete');
     await logToSupabase({ action: 'runTelegramBot', status: 'complete' });

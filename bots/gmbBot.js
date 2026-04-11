@@ -1,8 +1,9 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/pgClient');
-
 const { loadProviderCredentials } = require('../utils/credentials');
+const { autoGenerateContent } = require('../utils/autoContent');
+
 const gmbCreds = loadProviderCredentials('GMB', ['locationId', 'accessToken']);
 
 async function logToSupabase(activity) {
@@ -17,41 +18,56 @@ async function logToSupabase(activity) {
   }
 }
 
-async function getProfile() {
-  // GMB API doesn’t expose a direct profile endpoint.
-  logger.info('[GmbBot] getProfile: Not supported');
-  await logToSupabase({ action: 'getProfile', note: 'Not supported by GMB API' });
+async function fetchNextQueuedPost() {
+  const now = new Date().toISOString();
+  const { data: posts } = await supabase
+    .from('post_queue')
+    .select('*')
+    .eq('status', 'pending')
+    .eq('platform', 'gmb')
+    .lte('scheduled_at', now)
+    .order('priority', { ascending: false })
+    .limit(1);
+  return Array.isArray(posts) && posts.length > 0 ? posts[0] : null;
 }
 
-async function postContent(summary) {
-  const payload = {
-    languageCode: 'en',
-    summary
-  };
-
+async function postContentForAccount(locationId, token, summary) {
   const resp = await axios.post(
-    `https://mybusiness.googleapis.com/v4/accounts/${gmbLocationId}/localPosts`,
-    payload,
+    `https://mybusiness.googleapis.com/v4/accounts/${locationId}/localPosts`,
+    { languageCode: 'en', summary },
     {
       headers: {
-        'Authorization': `Bearer ${gmbAccessToken}`,
+        'Authorization': `Bearer ${token}`,
         'Content-Type': 'application/json'
       }
     }
   );
-
-  logger.info('[GmbBot] Post created');
-  await logToSupabase({ action: 'postContent', summary, response: resp.data });
+  logger.info(`[GmbBot] Post created for ${locationId}`);
+  await logToSupabase({ action: 'postContent', summary, account: locationId, response: resp.data });
+  return resp.data;
 }
 
-async function runGmbBot() {
+async function runGmbBot(payload = {}) {
   logger.info('[GmbBot] Starting (Axios-based)');
 
   if (!gmbCreds.length) {
-    const errMsg = '[GmbBot] No GMB credentials configured (see GMB_CREDENTIALS or GMB_LOCATION_ID/_1)';
-    logger.error(errMsg);
-    await logToSupabase({ action: 'runGmbBot', error: errMsg });
+    logger.error('[GmbBot] No GMB credentials configured (see GMB_CREDENTIALS or GMB_LOCATION_ID/_1)');
     return;
+  }
+
+  let textToPost = String(payload.caption || payload.text || '').trim();
+  let queuedPost = null;
+
+  if (!textToPost) {
+    queuedPost = await fetchNextQueuedPost();
+    if (queuedPost) {
+      textToPost = String(queuedPost.caption || queuedPost.text || '').trim();
+    }
+    if (!textToPost) {
+      logger.info('[GmbBot] Queue empty — auto-generating Revozi content...');
+      const generated = await autoGenerateContent('gmb');
+      textToPost = generated.caption;
+    }
   }
 
   try {
@@ -63,37 +79,22 @@ async function runGmbBot() {
         logger.warn('[GmbBot] Skipping incomplete credential', { cred });
         return;
       }
-      await postContentForAccount(locationId, token, 'Bot update!');
+      await postContentForAccount(locationId, token, textToPost);
     }, { concurrency: 1, delayMs: 800 });
+
+    if (queuedPost) {
+      await supabase.from('post_queue')
+        .update({ status: 'posted', last_attempt_at: new Date() })
+        .eq('id', queuedPost.id);
+    }
 
     logger.info('[GmbBot] Task complete');
     await logToSupabase({ action: 'runGmbBot', status: 'complete' });
   } catch (error) {
-    const errMsg = error.response?.data?.error?.message || error.message;
-    logger.error(`[GmbBot] Error: ${errMsg}`);
-    await logToSupabase({ action: 'runGmbBot', error: errMsg });
+    const msg = error.response?.data?.error?.message || error.message;
+    logger.error(`[GmbBot] Error: ${msg}`);
+    await logToSupabase({ action: 'runGmbBot', error: msg });
   }
-}
-
-async function postContentForAccount(locationId, token, summary) {
-  const payload = {
-    languageCode: 'en',
-    summary
-  };
-
-  const resp = await axios.post(
-    `https://mybusiness.googleapis.com/v4/accounts/${locationId}/localPosts`,
-    payload,
-    {
-      headers: {
-        'Authorization': `Bearer ${token}`,
-        'Content-Type': 'application/json'
-      }
-    }
-  );
-
-  logger.info(`[GmbBot] Post created for ${locationId}`);
-  await logToSupabase({ action: 'postContent', summary, account: locationId, response: resp.data });
 }
 
 module.exports = runGmbBot;

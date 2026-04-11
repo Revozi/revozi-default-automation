@@ -1,10 +1,9 @@
 const axios = require('axios');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/pgClient');
-
 const { loadProviderCredentials } = require('../utils/credentials');
+const { autoGenerateContent } = require('../utils/autoContent');
 
-// Load configured Facebook credentials (supports multiple)
 const fbCredentials = loadProviderCredentials('FACEBOOK', ['pageId', 'accessToken']);
 
 async function logToSupabase(activity) {
@@ -19,13 +18,17 @@ async function logToSupabase(activity) {
   }
 }
 
-async function getProfile(accessToken) {
-  const resp = await axios.get(
-    `https://graph.facebook.com/v18.0/me?access_token=${accessToken}`
-  );
-  logger.info(`[FacebookBot] Profile: ${JSON.stringify(resp.data)}`);
-  await logToSupabase({ action: 'getProfile', data: resp.data });
-  return resp.data;
+async function fetchNextQueuedPost() {
+  const now = new Date().toISOString();
+  const { data: posts } = await supabase
+    .from('post_queue')
+    .select('*')
+    .eq('status', 'pending')
+    .eq('platform', 'facebook')
+    .lte('scheduled_at', now)
+    .order('priority', { ascending: false })
+    .limit(1);
+  return Array.isArray(posts) && posts.length > 0 ? posts[0] : null;
 }
 
 async function postContentForPage(pageId, accessToken, message) {
@@ -33,37 +36,35 @@ async function postContentForPage(pageId, accessToken, message) {
     `https://graph.facebook.com/${pageId}/feed`,
     { message, access_token: accessToken }
   );
-  logger.info(`[FacebookBot] Post published to ${pageId}`);
+  logger.info(`[FacebookBot] Post published to page ${pageId}`);
   await logToSupabase({ action: 'postContent', pageId, message, resp: resp.data });
   return resp.data;
 }
 
-async function commentOnContent(postId, message) {
-  const resp = await axios.post(
-    `https://graph.facebook.com/${postId}/comments`,
-    { message, access_token: fbAccessToken }
-  );
-  logger.info(`[FacebookBot] Commented on ${postId}`);
-  await logToSupabase({ action: 'commentOnContent', postId, message, resp: resp.data });
-}
-
-async function autoReplyToComments(postId, replyMessage) {
-  logger.info('[FacebookBot] autoReplyToComments: Not implemented');
-  await logToSupabase({ action: 'autoReplyToComments', status: 'not-implemented', postId });
-}
-
-async function runFacebookBot() {
+async function runFacebookBot(payload = {}) {
   logger.info('[FacebookBot] Starting (Axios-based)');
 
   if (!fbCredentials.length) {
-    const msg = '[FacebookBot] No Facebook credentials configured (see FACEBOOK_CREDENTIALS or FACEBOOK_PAGE_ID/_1 vars)';
-    logger.error(msg);
-    await logToSupabase({ action: 'runFacebookBot', error: msg });
+    logger.error('[FacebookBot] No Facebook credentials configured (see FACEBOOK_CREDENTIALS or FACEBOOK_PAGE_ID/_1 vars)');
     return;
   }
 
+  let textToPost = String(payload.caption || payload.text || '').trim();
+  let queuedPost = null;
+
+  if (!textToPost) {
+    queuedPost = await fetchNextQueuedPost();
+    if (queuedPost) {
+      textToPost = String(queuedPost.caption || queuedPost.text || '').trim();
+    }
+    if (!textToPost) {
+      logger.info('[FacebookBot] Queue empty — auto-generating Revozi content...');
+      const generated = await autoGenerateContent('facebook');
+      textToPost = generated.caption;
+    }
+  }
+
   try {
-    // Post to all configured pages
     const { runWithRateLimit } = require('../utils/rateLimiter');
     await runWithRateLimit(fbCredentials, async (cred) => {
       const { pageId, accessToken } = cred;
@@ -71,16 +72,14 @@ async function runFacebookBot() {
         logger.warn('[FacebookBot] Skipping incomplete credential entry', { cred });
         return;
       }
-
-      await getProfile(accessToken);
-      const post = await postContentForPage(pageId, accessToken, 'Hello from Axios Facebook bot!');
-      const postId = post?.id;
-
-      if (postId) {
-        await commentOnContent(postId, 'Nice post!');
-        await autoReplyToComments(postId, 'Thanks for your comment!');
-      }
+      await postContentForPage(pageId, accessToken, textToPost);
     }, { concurrency: 1, delayMs: 800 });
+
+    if (queuedPost) {
+      await supabase.from('post_queue')
+        .update({ status: 'posted', last_attempt_at: new Date() })
+        .eq('id', queuedPost.id);
+    }
 
     logger.info('[FacebookBot] Task complete');
     await logToSupabase({ action: 'runFacebookBot', status: 'complete' });

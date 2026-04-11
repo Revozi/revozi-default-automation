@@ -113,10 +113,16 @@ async function generateCaption({ prompt, platform, languages = supportedLangs, g
     // Generate base English caption
     const aiResponse = await openai.chat.completions.create({
       model: 'gpt-4',
-      messages: [{ 
-        role: 'user', 
-        content: `Generate an engaging ${platform} caption for: ${finalPrompt}\n\nCaption:` 
-      }],
+      messages: [
+        {
+          role: 'system',
+          content: `You are a social media expert for Revozi — an AI-powered platform that helps businesses automate workflows, scale smarter, and grow faster. Always write content that promotes the Revozi brand, its innovation, and its mission to empower businesses through AI automation. Never mention any other brand name. Keep content authentic, engaging, and platform-appropriate.`
+        },
+        {
+          role: 'user',
+          content: `Generate an engaging ${platform} caption for: ${finalPrompt}\n\nCaption:`
+        }
+      ],
       temperature: 0.7
     });
 
