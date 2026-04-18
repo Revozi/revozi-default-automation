@@ -32,7 +32,7 @@ async function postTweet(text, cred) {
   return resp.data;
 }
 
-async function runTwitterBot() {
+async function runTwitterBot(payload = {}) {
   logger.info('[TwitterBot] Starting (Axios-based)');
 
   const apiKey = process.env.TWITTER_API_KEY;

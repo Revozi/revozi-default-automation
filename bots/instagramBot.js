@@ -58,7 +58,7 @@ async function getRecentMedia(igId, token) {
   return data.data;
 }
 
-async function runInstagramBot() {
+async function runInstagramBot(payload = {}) {
   logger.info('[InstagramBot] Starting (Graph API)');
 
   const { loadProviderCredentials } = require('../utils/credentials');
