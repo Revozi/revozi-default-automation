@@ -7,4 +7,5 @@ module.exports = {
   reddit: require('./redditBot'),
   gmb: require('./gmbBot'),
   pinterest: require('./pinterestBot'),
+  youtube: require('./youtubeBot'),
 };
