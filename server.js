@@ -13,6 +13,7 @@ const verificationRoutes = require('./routes/verificationRoutes');
 const leaderboardRoutes = require('./routes/leaderboardRoutes');
 const rewardsWebhooks = require('./routes/webhooks');
 const rewardsRoutes = require('./routes/rewardsRoutes');
+const authRoutes = require('./routes/authRoutes');
 const startCronJobs = require("./cron/scheduleBots");
 const cleanupInactive = require("./cron/cleanupInactive");
 const dispatcherCron = require("./cron/dispatcher");
@@ -25,8 +26,13 @@ const app = express();
 app.use(helmet({
   crossOriginResourcePolicy: { policy: "cross-origin" }
 }));
+const allowedOrigins = (process.env.CORS_ORIGIN || 'http://localhost:8000')
+  .split(',').map(o => o.trim()).filter(Boolean);
 app.use(cors({
-  origin: process.env.CORS_ORIGIN || 'http://localhost:8000',
+  origin: (origin, cb) => {
+    if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+    cb(new Error('CORS: origin not allowed'));
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'X-Revozi-User-Id', 'X-Revozi-Workspace-Id', 'X-Internal-Secret']
@@ -51,6 +57,9 @@ app.use((req, res, next) => {
 app.get("/health", (req, res) => {
   res.json({ status: "ok", service: "revozi-automation" });
 });
+
+// Auth routes are public (login/signup must be reachable before a token exists)
+app.use('/auth', authRoutes);
 
 // All business routes require internal auth (called only from Revozi FastAPI proxy)
 app.use(internalAuth);
