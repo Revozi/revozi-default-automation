@@ -9,6 +9,7 @@ const runFacebookBot = require('../bots/facebookBot');
 const runRedditBot = require('../bots/redditBot');
 const runGmbBot = require('../bots/gmbBot');
 const runPinterestBot = require('../bots/pinterestBot');
+const runYoutubeBot = require('../bots/youtubeBot');
 
 async function safeRun(name, fn) {
   try {
@@ -59,6 +60,11 @@ function startCronJobs() {
   cron.schedule('50 * * * *', async () => {
     logger.info('[CRON] PinterestBot Triggered');
     await safeRun('PinterestBot', () => runPinterestBot());
+  });
+
+  cron.schedule('0 */6 * * *', async () => {
+    logger.info('[CRON] YoutubeBot Triggered');
+    await safeRun('YoutubeBot', () => runYoutubeBot());
   });
 }
 

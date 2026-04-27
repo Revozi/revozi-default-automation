@@ -1,151 +1,183 @@
-const axios = require('axios');
-const FormData = require('form-data');
 const fs = require('fs');
+const os = require('os');
+const path = require('path');
+const crypto = require('crypto');
+const axios = require('axios');
+const { google } = require('googleapis');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/pgClient');
-const { loadProviderCredentials } = require('../utils/credentials');
-const { autoGenerateContent } = require('../utils/autoContent');
 
-const ytCreds = loadProviderCredentials('YOUTUBE', ['accessToken', 'channelId']);
+const YT_TITLE_LIMIT = 100;
+const YT_DESC_LIMIT = 5000;
 
 async function logToSupabase(activity) {
   try {
     await supabase.from('engagements').insert([{
       platform: 'youtube',
       ...activity,
-      created_at: new Date().toISOString()
+      created_at: new Date().toISOString(),
     }]);
   } catch (err) {
     logger.error(`[YoutubeBot] Supabase log error: ${err.message}`);
   }
 }
 
-async function fetchNextQueuedPost() {
+function buildOAuthClient() {
+  const clientId = process.env.YOUTUBE_CLIENT_ID;
+  const clientSecret = process.env.YOUTUBE_CLIENT_SECRET;
+  const refreshToken = process.env.YOUTUBE_REFRESH_TOKEN;
+
+  if (!clientId || !clientSecret || !refreshToken) return null;
+
+  const oauth2 = new google.auth.OAuth2(clientId, clientSecret, 'urn:ietf:wg:oauth:2.0:oob');
+  oauth2.setCredentials({ refresh_token: refreshToken });
+  return oauth2;
+}
+
+async function downloadToTemp(url) {
+  const tmp = path.join(os.tmpdir(), `yt-${crypto.randomBytes(6).toString('hex')}.mp4`);
+  const writer = fs.createWriteStream(tmp);
+  const resp = await axios.get(url, { responseType: 'stream', maxContentLength: Infinity, maxBodyLength: Infinity });
+  await new Promise((resolve, reject) => {
+    resp.data.pipe(writer);
+    writer.on('finish', resolve);
+    writer.on('error', reject);
+  });
+  return tmp;
+}
+
+function buildSnippet(caption, payload) {
+  const baseTitle = payload.title || caption || payload.text || 'Untitled Video';
+  const title = String(baseTitle).slice(0, YT_TITLE_LIMIT);
+  const description = String(payload.description || caption || payload.text || '').slice(0, YT_DESC_LIMIT);
+  const tags = Array.isArray(payload.tags) ? payload.tags : [];
+  return {
+    snippet: { title, description, tags, categoryId: '22' },
+    status: { privacyStatus: 'public', selfDeclaredMadeForKids: false },
+  };
+}
+
+async function uploadOne(youtube, filePath, requestBody) {
+  const res = await youtube.videos.insert({
+    part: ['snippet', 'status'],
+    requestBody,
+    media: { body: fs.createReadStream(filePath) },
+  });
+  return res.data;
+}
+
+async function fetchPendingPosts(limit = 5) {
   const now = new Date().toISOString();
-  const { data: posts } = await supabase
+  const { data, error } = await supabase
     .from('post_queue')
     .select('*')
-    .eq('status', 'pending')
     .eq('platform', 'youtube')
+    .eq('status', 'pending')
     .lte('scheduled_at', now)
     .order('priority', { ascending: false })
-    .limit(1);
-  return Array.isArray(posts) && posts.length > 0 ? posts[0] : null;
+    .limit(limit);
+  if (error) {
+    logger.error(`[YoutubeBot] Supabase queue error: ${error.message}`);
+    return [];
+  }
+  return data || [];
 }
 
-async function uploadVideo(token, videoPath, title, description, tags = []) {
-  const metadata = {
-    snippet: {
-      title: title || 'Untitled Video',
-      description: description || '',
-      tags: tags,
-      categoryId: '22'
-    },
-    status: {
-      privacyStatus: 'public',
-      selfDeclaredMadeForKids: false
+async function processPayload(youtube, payload) {
+  const { mediaUrl, videoPath, caption } = payload;
+  let localPath = videoPath;
+  let downloaded = false;
+
+  try {
+    if (!localPath && mediaUrl) {
+      logger.info(`[YoutubeBot] Downloading media from ${mediaUrl}`);
+      localPath = await downloadToTemp(mediaUrl);
+      downloaded = true;
     }
-  };
-
-  const form = new FormData();
-  form.append('metadata', JSON.stringify(metadata), { contentType: 'application/json' });
-  
-  if (videoPath && fs.existsSync(videoPath)) {
-    form.append('video', fs.createReadStream(videoPath), { contentType: 'video/*' });
-  } else {
-    throw new Error('Video file not found');
-  }
-
-  const response = await axios.post(
-    'https://www.googleapis.com/upload/youtube/v3/videos',
-    form,
-    {
-      headers: { ...form.getHeaders(), 'Authorization': `Bearer ${token}` },
-      params: { part: 'snippet,status', uploadType: 'multipart' },
-      maxContentLength: Infinity,
-      maxBodyLength: Infinity
+    if (!localPath || !fs.existsSync(localPath)) {
+      throw new Error('YouTube requires a video file (mediaUrl or videoPath)');
     }
-  );
 
-  logger.info(`[YoutubeBot] Video uploaded: ${response.data.id}`);
-  return response.data;
-}
-
-async function postContentForAccount(token, channelId, payload) {
-  const { videoPath, title, description, tags, caption, text } = payload;
-
-  if (!videoPath) {
-    throw new Error('YouTube requires video content');
+    const requestBody = buildSnippet(caption, payload);
+    const result = await uploadOne(youtube, localPath, requestBody);
+    logger.info(`[YoutubeBot] Uploaded video id=${result.id} title="${requestBody.snippet.title}"`);
+    return result;
+  } finally {
+    if (downloaded && localPath) {
+      fs.promises.unlink(localPath).catch(() => {});
+    }
   }
-
-  const videoTitle = title || caption || text || 'Untitled Video';
-  const videoDesc = description || text || '';
-  const videoTags = tags || [];
-  
-  const result = await uploadVideo(token, videoPath, videoTitle, videoDesc, videoTags);
-  
-  await logToSupabase({ 
-    action: 'uploadVideo', 
-    video_id: result.id,
-    title: videoTitle,
-    channel: channelId,
-    response: result 
-  });
-  
-  return result;
 }
 
 async function runYoutubeBot(payload = {}) {
   logger.info('[YoutubeBot] Starting');
 
-  if (!ytCreds.length) {
-    logger.error('[YoutubeBot] No YouTube credentials configured');
+  const oauth2 = buildOAuthClient();
+  if (!oauth2) {
+    logger.error('[YoutubeBot] Missing YOUTUBE_CLIENT_ID / YOUTUBE_CLIENT_SECRET / YOUTUBE_REFRESH_TOKEN');
     return;
   }
 
-  let postData = payload;
-  let queuedPost = null;
+  const youtube = google.youtube({ version: 'v3', auth: oauth2 });
 
-  if (!payload.videoPath && !payload.text) {
-    queuedPost = await fetchNextQueuedPost();
-    if (queuedPost) {
-      postData = {
-        videoPath: queuedPost.media_url,
-        title: queuedPost.title,
-        caption: queuedPost.caption,
-        text: queuedPost.text,
-        tags: queuedPost.tags || []
-      };
+  // Direct invocation path: dispatcher passes { mediaUrl, caption }; tests pass { videoPath, ... }
+  if (payload && (payload.mediaUrl || payload.videoPath)) {
+    try {
+      const result = await processPayload(youtube, payload);
+      await logToSupabase({
+        action: 'uploadVideo',
+        video_id: result.id,
+        title: result?.snippet?.title || null,
+        response: result,
+      });
+      logger.info('[YoutubeBot] Direct payload upload complete');
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message;
+      logger.error(`[YoutubeBot] Direct payload failed: ${msg}`);
+      await logToSupabase({ action: 'uploadVideo', error: msg });
     }
+    return;
   }
 
-  try {
-    const { runWithRateLimit } = require('../utils/rateLimiter');
-    await runWithRateLimit(ytCreds, async (cred) => {
-      const token = cred.accessToken || cred.access_token;
-      const channelId = cred.channelId || cred.channel_id;
-      
-      if (!token) {
-        logger.warn('[YoutubeBot] Missing access token');
-        return;
-      }
-      
-      await postContentForAccount(token, channelId, postData);
-    }, { concurrency: 1, delayMs: 2000 });
+  // Cron path: drain pending YouTube rows in post_queue
+  const posts = await fetchPendingPosts();
+  if (!posts.length) {
+    logger.info('[YoutubeBot] Queue empty — nothing to upload');
+    return;
+  }
 
-    if (queuedPost) {
+  logger.info(`[YoutubeBot] Found ${posts.length} pending YouTube post(s)`);
+
+  for (const post of posts) {
+    try {
+      const result = await processPayload(youtube, {
+        mediaUrl: post.media_url,
+        caption: post.caption,
+        title: post.title,
+        description: post.description,
+        tags: post.tags,
+      });
       await supabase.from('post_queue')
-        .update({ status: 'posted', last_attempt_at: new Date() })
-        .eq('id', queuedPost.id);
+        .update({ status: 'posted', last_attempt_at: new Date().toISOString() })
+        .eq('id', post.id);
+      await logToSupabase({
+        action: 'uploadVideo',
+        video_id: result.id,
+        title: result?.snippet?.title || null,
+        response: result,
+      });
+      logger.info(`[YoutubeBot] SUCCESS post_queue.id=${post.id} -> video ${result.id}`);
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message;
+      logger.error(`[YoutubeBot] FAILED post_queue.id=${post.id}: ${msg}`);
+      await supabase.from('post_queue')
+        .update({ status: 'failed', last_attempt_at: new Date().toISOString(), retries: (post.retries || 0) + 1 })
+        .eq('id', post.id);
+      await logToSupabase({ action: 'uploadVideo', queue_id: post.id, error: msg });
     }
-
-    logger.info('[YoutubeBot] Complete');
-    await logToSupabase({ action: 'runYoutubeBot', status: 'complete' });
-  } catch (error) {
-    const msg = error.response?.data?.error?.message || error.message;
-    logger.error(`[YoutubeBot] Error: ${msg}`);
-    await logToSupabase({ action: 'runYoutubeBot', error: msg });
   }
+
+  logger.info('[YoutubeBot] Complete');
 }
 
 module.exports = runYoutubeBot;

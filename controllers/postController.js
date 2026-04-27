@@ -10,7 +10,7 @@ const axios = require('axios');
 
 // Helper: Decide media type based on platform
 const inferMediaType = (platform) => {
-  const videoPlatforms = ['tiktok', 'youtubeshorts'];
+  const videoPlatforms = ['tiktok', 'youtube', 'youtubeshorts'];
   return videoPlatforms.includes(platform.toLowerCase()) ? 'video' : 'image';
 };
 
