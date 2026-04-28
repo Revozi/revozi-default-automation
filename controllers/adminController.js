@@ -12,6 +12,7 @@ const runFacebookBot = require("../bots/facebookBot")
 const runRedditBot = require("../bots/redditBot")
 const runGmbBot = require("../bots/gmbBot")
 const runPinterestBot = require("../bots/pinterestBot")
+const runYoutubeBot = require("../bots/youtubeBot")
 
 const botFunctions = {
   instagram: runInstagramBot,
@@ -22,6 +23,7 @@ const botFunctions = {
   reddit: runRedditBot,
   gmb: runGmbBot,
   pinterest: runPinterestBot,
+  youtube: runYoutubeBot,
 }
 
 // --- BOT STATUS TRACKING ---
@@ -42,6 +44,7 @@ async function getBotInterval(botName) {
     reddit: '30 * * * *',
     gmb: '45 * * * *',
     pinterest: '50 * * * *',
+    youtube: '0 */6 * * *',
   };
   let interval = (data && typeof data.value === 'string' && data.value.trim()) ? data.value.trim() : defaults[botName] || '*/15 * * * *';
   // Validate: must be a non-empty string
