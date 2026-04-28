@@ -48,16 +48,15 @@ exports.login = async (req, res) => {
       .eq('email', email)
       .single();
     if (!user) return res.status(400).json({ error: 'Invalid credentials' });
-    const match = await bcrypt.compare(password, user.password);
+    const hash = user.password_hash || user.password;
+    if (!hash) return res.status(400).json({ error: 'Invalid credentials' });
+    const match = await bcrypt.compare(password, hash);
     if (!match) return res.status(400).json({ error: 'Invalid credentials' });
-    // Update last_active
-    await supabase.from('users').update({ last_active: new Date() }).eq('email', email);
-  // Attach minimal auth context (simulate session) for downstream middleware
-  req.user = { id: user.id, name: user.name, email: user.email, role: user.role };
-  // Generate a simple token for the frontend (base64 encoded user info + timestamp)
-  const token = Buffer.from(JSON.stringify({ id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 })).toString('base64');
-  res.json({ message: 'Login successful', token, user: { id: user.id, name: user.name, email: user.email, role: user.role } });
+    const name = user.name || [user.first_name, user.last_name].filter(Boolean).join(' ') || email;
+    const token = Buffer.from(JSON.stringify({ id: user.id, email: user.email, role: user.role, exp: Date.now() + 86400000 })).toString('base64');
+    res.json({ message: 'Login successful', token, user: { id: user.id, name, email: user.email, role: user.role } });
   } catch (err) {
+    console.error('[AuthController] Login error:', err.message, err.stack);
     res.status(500).json({ error: 'Login failed' });
   }
 };
