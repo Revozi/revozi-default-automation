@@ -6,6 +6,8 @@ const axios = require('axios');
 const { google } = require('googleapis');
 const logger = require('../utils/logger');
 const { supabase } = require('../services/pgClient');
+const { autoGenerateContent } = require('../utils/autoContent');
+const { generateVideoFromPrompt } = require('../services/replicateService');
 
 const YT_TITLE_LIMIT = 100;
 const YT_DESC_LIMIT = 5000;
@@ -142,7 +144,29 @@ async function runYoutubeBot(payload = {}) {
   // Cron path: drain pending YouTube rows in post_queue
   const posts = await fetchPendingPosts();
   if (!posts.length) {
-    logger.info('[YoutubeBot] Queue empty — nothing to upload');
+    if (process.env.ENABLE_VIDEO_GEN !== 'true') {
+      logger.info('[YoutubeBot] Queue empty — nothing to upload');
+      return;
+    }
+    logger.info('[YoutubeBot] Queue empty — auto-generating video via Replicate');
+    try {
+      const { caption } = await autoGenerateContent('youtube');
+      logger.info(`[YoutubeBot] Generating video for: "${caption.substring(0, 80)}..."`);
+      const videoUrl = await generateVideoFromPrompt(caption);
+      logger.info(`[YoutubeBot] Replicate video ready: ${videoUrl}`);
+      const result = await processPayload(youtube, { mediaUrl: videoUrl, caption });
+      await logToSupabase({
+        action: 'uploadVideo',
+        video_id: result.id,
+        title: result?.snippet?.title || null,
+        response: result,
+      });
+      logger.info(`[YoutubeBot] Auto-generated video uploaded: video id=${result.id}`);
+    } catch (err) {
+      const msg = err.response?.data?.error?.message || err.message;
+      logger.error(`[YoutubeBot] Auto-generate failed: ${msg}`);
+      await logToSupabase({ action: 'uploadVideo', error: `auto-generate: ${msg}` });
+    }
     return;
   }
 

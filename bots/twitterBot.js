@@ -64,6 +64,13 @@ async function runTwitterBot(payload = {}) {
       const generated = await autoGenerateContent('twitter');
       const result = await postTweet(generated.caption, cred);
       logger.info(`[TwitterBot] Auto-generated tweet posted successfully`);
+      await supabase.from('post_queue').insert([{
+        platform: 'twitter',
+        caption: generated.caption,
+        status: 'posted',
+        scheduled_at: new Date().toISOString(),
+        last_attempt_at: new Date().toISOString(),
+      }]);
       await logToSupabase({ action: 'postContent', text: generated.caption, resp: result });
       return;
     }
