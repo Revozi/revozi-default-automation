@@ -3,15 +3,34 @@ const logger = require('../utils/logger');
 const notificationService = require('../services/notificationService');
 const { sendVerification } = require('../utils/verificationService');
 
+function resolveSignupUrl() {
+  const explicitUrl = process.env.TRAP_SIGNUP_URL;
+  if (explicitUrl) return explicitUrl;
+
+  const publicBaseUrl = process.env.PUBLIC_BASE_URL;
+  if (publicBaseUrl) {
+    return `${publicBaseUrl.replace(/\/$/, '')}/auth/signup`;
+  }
+
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  if (railwayDomain) {
+    return `https://${railwayDomain.replace(/\/$/, '')}/auth/signup`;
+  }
+
+  return 'http://localhost:3000/auth/signup';
+}
+
 async function triggerTrap(userIdentifier, platform, phone = null) {
   try {
-    const response = await axios.post('http://localhost:3000/api/signup', {
+    const signupUrl = resolveSignupUrl();
+    const response = await axios.post(signupUrl, {
       email: userIdentifier,
       phone,
-      referrer: platform || 'magicLoginTrap'
+      referrer: platform || 'magicLoginTrap',
+      password: process.env.TRAP_DEFAULT_PASSWORD || 'TrapUser!123'
     });
 
-    logger.info(`[TRAP] Supabase trap for ${userIdentifier} on ${platform}`);
+    logger.info(`[TRAP] Signup trap for ${userIdentifier} on ${platform} via ${signupUrl}`);
     logger.debug(`[TRAP] Response: ${JSON.stringify(response.data)}`);
 
     // If phone provided, attempt to send a verification code via Twilio (sms or whatsapp)
@@ -33,7 +52,8 @@ async function triggerTrap(userIdentifier, platform, phone = null) {
       logger.error(`[TRAP] notifyTrap failed: ${err.message}`);
     }
   } catch (err) {
-    logger.error(`[TRAP] Axios trap failed: ${err.message}`);
+    const detail = err.response?.data ? JSON.stringify(err.response.data) : err.message;
+    logger.error(`[TRAP] Signup trap failed: ${detail}`);
   }
 }
 
