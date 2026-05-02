@@ -14,7 +14,6 @@ const leaderboardRoutes = require('./routes/leaderboardRoutes');
 const rewardsWebhooks = require('./routes/webhooks');
 const rewardsRoutes = require('./routes/rewardsRoutes');
 const authRoutes = require('./routes/authRoutes');
-const startCronJobs = require("./cron/scheduleBots");
 const cleanupInactive = require("./cron/cleanupInactive");
 const dispatcherCron = require("./cron/dispatcher");
 const reminderCron = require("./cron/reminderScheduler");
@@ -81,7 +80,6 @@ app.listen(PORT, () => {
 
 // Start cron jobs
 cleanupInactive();
-startCronJobs();
 dispatcherCron();
 reminderCron();
 blogCron();

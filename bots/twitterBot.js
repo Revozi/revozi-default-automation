@@ -39,6 +39,7 @@ async function runTwitterBot(payload = {}) {
   const apiSecret = process.env.TWITTER_API_SECRET;
   const accessToken = process.env.TWITTER_ACCESS_TOKEN;
   const accessTokenSecret = process.env.TWITTER_ACCESS_TOKEN_SECRET;
+  const allowAutoGenerateOnEmpty = process.env.TWITTER_AUTO_GENERATE_ON_EMPTY === 'true';
 
   logger.info(`[TwitterBot] Credentials check - apiKey:${!!apiKey} apiSecret:${!!apiSecret} accessToken:${!!accessToken} accessTokenSecret:${!!accessTokenSecret}`);
 
@@ -60,10 +61,15 @@ async function runTwitterBot(payload = {}) {
 
     if (error) { logger.error(`[TwitterBot] Supabase error: ${error.message}`); return; }
     if (!posts || posts.length === 0) {
+      if (!allowAutoGenerateOnEmpty) {
+        logger.info('[TwitterBot] Queue empty — auto-generation disabled, skipping post');
+        return;
+      }
+
       logger.info('[TwitterBot] Queue empty — auto-generating Revozi content...');
       const generated = await autoGenerateContent('twitter');
       const result = await postTweet(generated.caption, cred);
-      logger.info(`[TwitterBot] Auto-generated tweet posted successfully`);
+      logger.info('[TwitterBot] Auto-generated tweet posted successfully');
       await supabase.from('post_queue').insert([{
         platform: 'twitter',
         caption: generated.caption,
