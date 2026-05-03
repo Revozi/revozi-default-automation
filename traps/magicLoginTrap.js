@@ -36,10 +36,19 @@ async function triggerTrap(userIdentifier, platform, phone = null) {
     // If phone provided, attempt to send a verification code via Twilio (sms or whatsapp)
     if (phone) {
       try {
-        const via = phone.startsWith('whatsapp:') ? 'whatsapp' : 'sms';
-        const normalizedTo = via === 'whatsapp' ? phone.replace(/^whatsapp:/, '') : phone;
+        const requestedVia = phone.startsWith('whatsapp:') ? 'whatsapp' : 'sms';
+        const normalizedTo = requestedVia === 'whatsapp' ? phone.replace(/^whatsapp:/, '') : phone;
+        const via =
+          requestedVia === 'whatsapp' && process.env.ENABLE_WHATSAPP !== 'true'
+            ? 'sms'
+            : requestedVia;
+
+        if (requestedVia === 'whatsapp' && via === 'sms') {
+          logger.info('[TRAP] WhatsApp verification disabled, falling back to SMS');
+        }
+
         await sendVerification({ to: normalizedTo, via });
-        logger.info(`[TRAP] Sent verification to ${phone}`);
+        logger.info(`[TRAP] Sent ${via} verification to ${normalizedTo}`);
       } catch (err) {
         logger.error(`[TRAP] Verification send failed: ${err.message}`);
       }
