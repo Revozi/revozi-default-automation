@@ -4,6 +4,43 @@ const axios = require('axios');
 const REPLICATE_API_TOKEN = process.env.REPLICATE_API_TOKEN;
 
 const KLING_VIDEO_URL = 'https://api.replicate.com/v1/models/kwaivgi/kling-v1.6-standard/predictions';
+const DEFAULT_KLING_NEGATIVE_PROMPT = [
+  'low quality',
+  'blurry',
+  'flicker',
+  'jitter',
+  'warped UI',
+  'unreadable text',
+  'subtitles',
+  'captions',
+  'watermark',
+  'logo',
+  'brand names',
+  'distorted hands',
+  'duplicate people',
+  'deformed faces',
+  'glitch artifacts'
+].join(', ');
+
+function normalizeVideoOptions(startImageOrOptions, maybeOptions) {
+  if (
+    startImageOrOptions &&
+    typeof startImageOrOptions === 'object' &&
+    !Array.isArray(startImageOrOptions)
+  ) {
+    return { ...startImageOrOptions };
+  }
+
+  return {
+    ...(startImageOrOptions ? { startImage: startImageOrOptions } : {}),
+    ...(maybeOptions || {})
+  };
+}
+
+function normalizeKlingDuration(duration) {
+  const seconds = Number(duration);
+  return seconds >= 10 ? 10 : 5;
+}
 
 // 🕒 Poll prediction status until success/fail
 const waitForReplicatePrediction = async (predictionId, maxWait = 300) => {
@@ -88,14 +125,30 @@ const generateImageFromPrompt = async (
 
 // 🎥 Video generation (Kling v1.6, with optional start_image)
 
-const generateVideoFromPrompt = async (prompt, startImage = null) => {
+const generateVideoFromPrompt = async (prompt, startImageOrOptions = null, maybeOptions = {}) => {
+  const {
+    startImage = null,
+    duration = process.env.REPLICATE_VIDEO_DURATION || 10,
+    aspectRatio = process.env.REPLICATE_VIDEO_ASPECT_RATIO || '16:9',
+    cfgScale = Number(process.env.REPLICATE_VIDEO_CFG_SCALE || 0.7),
+    negativePrompt = DEFAULT_KLING_NEGATIVE_PROMPT,
+    referenceImages = []
+  } = normalizeVideoOptions(startImageOrOptions, maybeOptions);
+
   try {
     const response = await axios.post(
       KLING_VIDEO_URL,
       {
         input: {
           prompt,
-          ...(startImage && { start_image: startImage })
+          duration: normalizeKlingDuration(duration),
+          cfg_scale: cfgScale,
+          negative_prompt: negativePrompt,
+          ...(startImage && { start_image: startImage }),
+          ...(!startImage && aspectRatio ? { aspect_ratio: aspectRatio } : {}),
+          ...(Array.isArray(referenceImages) && referenceImages.length
+            ? { reference_images: referenceImages.slice(0, 4) }
+            : {})
         }
       },
       {

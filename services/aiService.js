@@ -76,6 +76,45 @@ function generateGeoAware(countryCode, langs = supportedLangs) {
   }, {});
 }
 
+function stripCodeFence(text = '') {
+  return String(text)
+    .trim()
+    .replace(/^```json\s*/i, '')
+    .replace(/^```\s*/i, '')
+    .replace(/\s*```$/, '')
+    .trim();
+}
+
+function parseJsonPayload(raw) {
+  return JSON.parse(stripCodeFence(raw));
+}
+
+function buildYoutubeFallbackPackage(finalPrompt, geo = 'US') {
+  const geoAware = generateGeoAware(geo, ['en']).en;
+  const title = 'Turn Customer Reviews Into Revenue With Revozi';
+  const description = [
+    'See how Revozi helps SaaS teams triage Google Reviews, uncover product insights, and draft high-quality responses without manual busywork.',
+    `Built for founders, customer success, and product teams who want faster action from customer feedback. ${geoAware}. Learn more at revozi.com.`
+  ].join('\n\n');
+
+  return {
+    topicAngle: finalPrompt,
+    title,
+    description,
+    tags: ['Revozi', 'Google Reviews', 'SaaS', 'Customer Feedback', 'AI Automation', 'Reputation Management'],
+    caption: 'Every review contains revenue signals, churn warnings, and product insight. Revozi helps SaaS teams catch all three by triaging Google Reviews with AI, surfacing trends, and drafting thoughtful responses in minutes instead of hours.',
+    videoPrompt: `A polished 10-second B2B SaaS explainer video for Revozi. Start with a founder or customer success lead noticing a negative Google Review, then cut to a modern review-management dashboard with sentiment analysis, issue triage, and AI-drafted replies. End with a confident team seeing ratings improve and customer feedback turned into product insight. Clean cinematic lighting, premium SaaS visuals, smooth camera motion, blue-teal product palette, realistic UI motion, no on-screen text.`,
+    negativePrompt: 'low quality, blurry, unreadable text, subtitles, captions, watermarks, logos, warped UI, flicker, jitter, distorted faces, duplicate people',
+    duration: 10,
+    aspectRatio: '16:9',
+    extras: {
+      generatedAt: new Date().toISOString(),
+      geo,
+      geoAware
+    }
+  };
+}
+
 /**
  * Generate multi-language captions with transcripts and geo-awareness
  * @param {Object} params - Generation parameters
@@ -162,6 +201,119 @@ async function generateCaption({ prompt, platform, languages = supportedLangs, g
   } catch (err) {
     logger.error(`[AI_GENERATE] Error generating multi-lang caption: ${err.message}`);
     throw new Error('AI caption generation failed');
+  }
+}
+
+async function generateYoutubeVideoPackage({ prompt, geo = 'US' }) {
+  const platform = 'youtube';
+  const finalPrompt =
+    (prompt || '').trim() || fallbackPrompts.youtube || fallbackPrompts.default;
+
+  if (!finalPrompt) {
+    logger.error('[YOUTUBE_AI] No valid prompt for YouTube package');
+    throw new Error('Missing YouTube prompt');
+  }
+
+  try {
+    const { data: cached } = await supabase
+      .from('ai_outputs')
+      .select('output')
+      .eq('prompt', finalPrompt)
+      .eq('platform', 'youtube_video')
+      .limit(1)
+      .maybeSingle();
+
+    if (cached?.output) {
+      logger.info('[YOUTUBE_AI] Used cached YouTube video package');
+      return cached.output;
+    }
+  } catch (err) {
+    logger.warn(`[YOUTUBE_AI] Cache lookup error: ${err.message}`);
+  }
+
+  const geoAware = generateGeoAware(geo, ['en']).en;
+
+  try {
+    const aiResponse = await openai.chat.completions.create({
+      model: 'gpt-4',
+      messages: [
+        {
+          role: 'system',
+          content: `You are the creative director and growth marketer for Revozi, an AI-powered review management platform for SaaS teams. Revozi helps teams triage Google Reviews, identify product and churn signals, and draft thoughtful review responses fast. Create premium, insight-driven YouTube content ideas that feel like high-quality B2B SaaS marketing, not generic AI slop. Always return strict JSON only.`
+        },
+        {
+          role: 'user',
+          content: `Create one Revozi YouTube auto-post package for this topic: "${finalPrompt}".
+
+Context:
+- Audience: SaaS founders, customer success leaders, product managers, growth teams
+- Region note: ${geoAware}
+- Video target: 10-second cinematic explainer clip for a YouTube upload
+- Product truth: Revozi focuses on Google Reviews automation, customer feedback analysis, and AI-assisted response drafting
+
+Return JSON with exactly these keys:
+{
+  "topicAngle": string,
+  "title": string,
+  "description": string,
+  "tags": string[],
+  "caption": string,
+  "videoPrompt": string,
+  "negativePrompt": string,
+  "duration": number,
+  "aspectRatio": string
+}
+
+Rules:
+- title: under 70 characters, specific and strong
+- description: 2 short paragraphs, polished, product-led, clear CTA to revozi.com
+- tags: 6 to 10 concise tags
+- caption: 60 to 90 words, suitable as narration/supporting copy
+- videoPrompt: one vivid paragraph optimized for text-to-video, showing realistic SaaS scenes, review triage, dashboards, product insight, and team action
+- videoPrompt must explicitly avoid cheesy stock-ad style and should say no on-screen text
+- negativePrompt: compact list of things to avoid
+- duration: set to 10
+- aspectRatio: set to "16:9"
+- Never mention competitors or any brand other than Revozi`
+        }
+      ],
+      temperature: 0.8
+    });
+
+    const raw = aiResponse?.choices?.[0]?.message?.content?.trim();
+    if (!raw) throw new Error('AI response is empty');
+
+    const parsed = parseJsonPayload(raw);
+    const fallback = buildYoutubeFallbackPackage(finalPrompt, geo);
+    const output = {
+      topicAngle: parsed.topicAngle || finalPrompt,
+      title: String(parsed.title || '').trim() || fallback.title,
+      description: String(parsed.description || '').trim() || fallback.description,
+      tags: Array.isArray(parsed.tags)
+        ? parsed.tags.map(tag => String(tag).trim()).filter(Boolean).slice(0, 10)
+        : fallback.tags,
+      caption: String(parsed.caption || '').trim() || fallback.caption,
+      videoPrompt: String(parsed.videoPrompt || '').trim() || fallback.videoPrompt,
+      negativePrompt: String(parsed.negativePrompt || '').trim() || fallback.negativePrompt,
+      duration: 10,
+      aspectRatio: '16:9',
+      extras: {
+        generatedAt: new Date().toISOString(),
+        geo,
+        geoAware
+      }
+    };
+
+    await supabase.from('ai_outputs').insert({
+      platform: 'youtube_video',
+      prompt: finalPrompt,
+      output
+    });
+
+    return output;
+  } catch (err) {
+    logger.error(`[YOUTUBE_AI] Error generating package: ${err.message}`);
+    return buildYoutubeFallbackPackage(finalPrompt, geo);
   }
 }
 
@@ -297,6 +449,7 @@ Blog Post:`,
 
 module.exports = {
   generateCaption,
+  generateYoutubeVideoPackage,
   generateBlogContent,
   generateTranscript,
   generateGeoAware

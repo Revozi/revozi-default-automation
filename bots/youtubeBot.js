@@ -150,11 +150,22 @@ async function runYoutubeBot(payload = {}) {
     }
     logger.info('[YoutubeBot] Queue empty — auto-generating video via Replicate');
     try {
-      const { caption } = await autoGenerateContent('youtube');
-      logger.info(`[YoutubeBot] Generating video for: "${caption.substring(0, 80)}..."`);
-      const videoUrl = await generateVideoFromPrompt(caption);
+      const generated = await autoGenerateContent('youtube');
+      const videoPrompt = generated.video_prompt || generated.caption;
+      logger.info(`[YoutubeBot] Generating video for: "${videoPrompt.substring(0, 100)}..."`);
+      const videoUrl = await generateVideoFromPrompt(videoPrompt, {
+        duration: generated.duration,
+        aspectRatio: generated.aspect_ratio,
+        negativePrompt: generated.negative_prompt
+      });
       logger.info(`[YoutubeBot] Replicate video ready: ${videoUrl}`);
-      const result = await processPayload(youtube, { mediaUrl: videoUrl, caption });
+      const result = await processPayload(youtube, {
+        mediaUrl: videoUrl,
+        caption: generated.caption,
+        title: generated.title,
+        description: generated.description,
+        tags: generated.tags
+      });
       await logToSupabase({
         action: 'uploadVideo',
         video_id: result.id,

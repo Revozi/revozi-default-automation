@@ -4,7 +4,7 @@
  * using OpenAI when the post_queue is empty.
  */
 
-const { generateCaption } = require('../services/aiService');
+const { generateCaption, generateYoutubeVideoPackage } = require('../services/aiService');
 const logger = require('./logger');
 
 const MEDIA_POOL = [
@@ -49,6 +49,23 @@ async function autoGenerateContent(platform) {
   logger.info(`[AutoContent] Generating content for ${platform}: "${topic.substring(0, 60)}..."`);
 
   try {
+    if (platform === 'youtube') {
+      const pkg = await generateYoutubeVideoPackage({ prompt: topic });
+      logger.info(`[AutoContent] Generated YouTube package: "${pkg.title}"`);
+      return {
+        caption: pkg.caption,
+        title: pkg.title,
+        description: pkg.description,
+        tags: pkg.tags,
+        video_prompt: pkg.videoPrompt,
+        negative_prompt: pkg.negativePrompt,
+        duration: pkg.duration,
+        aspect_ratio: pkg.aspectRatio,
+        topic_angle: pkg.topicAngle,
+        extras: pkg.extras
+      };
+    }
+
     const result = await generateCaption({ prompt: topic, platform });
     const caption = result?.captions?.en || Object.values(result?.captions || {})[0] || topic;
     const media_url = nextMediaUrl();
@@ -56,6 +73,19 @@ async function autoGenerateContent(platform) {
     return { caption, media_url };
   } catch (err) {
     logger.error(`[AutoContent] AI generation failed for ${platform}: ${err.message}. Using topic as fallback.`);
+    if (platform === 'youtube') {
+      return {
+        caption: `${topic} Learn how Revozi helps SaaS teams triage reviews, surface customer signals, and draft thoughtful responses faster at revozi.com.`,
+        title: 'How Revozi Turns Reviews Into SaaS Growth',
+        description: 'Revozi helps SaaS teams manage Google Reviews with AI-powered triage, insight extraction, and smart response drafting.\n\nSee how customer feedback becomes action at revozi.com.',
+        tags: ['Revozi', 'SaaS', 'Google Reviews', 'AI Automation', 'Customer Feedback'],
+        video_prompt: `A premium 10-second Revozi explainer video showing a SaaS team moving from review chaos to clarity with AI triage, customer feedback insights, and response drafting inside a modern dashboard. Realistic office scenes, elegant UI motion, blue-teal palette, no on-screen text.`,
+        negative_prompt: 'low quality, blurry, unreadable text, subtitles, watermarks, warped UI, flicker',
+        duration: 10,
+        aspect_ratio: '16:9'
+      };
+    }
+
     return {
       caption: `${topic} — Learn more at revozi.com 🚀 #Revozi #AI #BusinessAutomation`,
       media_url: nextMediaUrl(),
