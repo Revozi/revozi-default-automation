@@ -2,20 +2,70 @@ const axios = require('axios');
 const nodemailer = require('nodemailer');
 const logger = require('../utils/logger');
 
-async function sendEmailAlert(subject, message) {
-  if (process.env.ENABLE_EMAIL !== 'true') return;
+function createEmailTransport() {
+  const provider = (process.env.EMAIL_PROVIDER || '').trim().toLowerCase();
+  const sendgridApiKey = process.env.SENDGRID_API_KEY;
+  const smtpHost = process.env.SMTP_HOST;
+  const smtpPort = process.env.SMTP_PORT;
+  const smtpUser = process.env.SMTP_USER || process.env.EMAIL_USER;
+  const smtpPass = process.env.SMTP_PASS || process.env.EMAIL_PASS;
 
-  const transporter = nodemailer.createTransport({
+  if (provider === 'sendgrid' || sendgridApiKey) {
+    if (!sendgridApiKey) {
+      throw new Error('SENDGRID_API_KEY missing');
+    }
+
+    return nodemailer.createTransport({
+      host: process.env.SMTP_HOST || 'smtp.sendgrid.net',
+      port: parseInt(process.env.SMTP_PORT || '587', 10),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: {
+        user: process.env.SMTP_USER || 'apikey',
+        pass: sendgridApiKey,
+      },
+    });
+  }
+
+  if (provider === 'hostinger' || provider === 'smtp' || smtpHost) {
+    if (!smtpHost || !smtpPort || !smtpUser || !smtpPass) {
+      throw new Error('SMTP_HOST, SMTP_PORT, EMAIL_USER/SMTP_USER, and EMAIL_PASS/SMTP_PASS are required');
+    }
+
+    return nodemailer.createTransport({
+      host: smtpHost,
+      port: parseInt(smtpPort, 10),
+      secure: process.env.SMTP_SECURE === 'true',
+      auth: {
+        user: smtpUser,
+        pass: smtpPass,
+      },
+    });
+  }
+
+  return nodemailer.createTransport({
     service: 'gmail',
     auth: {
       user: process.env.EMAIL_USER,
       pass: process.env.EMAIL_PASS
     }
   });
+}
+
+async function sendEmailAlert(subject, message) {
+  if (process.env.ENABLE_EMAIL !== 'true') return;
 
   try {
+    const transporter = createEmailTransport();
+    const from = process.env.EMAIL_FROM || process.env.EMAIL_USER;
+    if (!from) {
+      throw new Error('EMAIL_FROM or EMAIL_USER missing');
+    }
+    if (!process.env.NOTIFY_EMAIL) {
+      throw new Error('NOTIFY_EMAIL missing');
+    }
+
     await transporter.sendMail({
-      from: process.env.EMAIL_USER,
+      from,
       to: process.env.NOTIFY_EMAIL,
       subject,
       text: message
